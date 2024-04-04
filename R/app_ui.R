@@ -27,10 +27,18 @@ app_ui <- function(request) {
                 verbatimTextOutput("files", placeholder = TRUE),
                 tags$p(),
                 radioButtons(
+                  inputId = "preprocess",
+                  label = "Pre-process files",
+                  choices = c("No","Yes")
+                ),
+                tags$p(),
+                radioButtons(
                   inputId = "model_type",
                   label = "Model Type",
                   choices = c("Unsupervised","Supervised")
                 ),
+                uiOutput("columnSelector"),  # Dynamic UI for selecting columns
+
 
                 downloadButton("downloadprocessed", "Download pre-processed .fcs"),
                 downloadButton("downloadcounts", "Download cell counts"),

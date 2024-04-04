@@ -6,9 +6,10 @@
 # pre-process functions
 preprocess_2 <- function(ff){
   ff <- flowCore::compensate(ff, flowCore::keyword(ff)$SPILL)
-  ff <- flowCore::transform(ff,
+  ff <- tryCatch(flowCore::transform(ff,
                             flowCore::estimateLogicle(ff,
-                                                      colnames(flowCore::keyword(ff)$SPILL)))
+                                                      colnames(flowCore::keyword(ff)$SPILL)),
+                            error = function(x){cat("SPILL keyword not found, no conpensation applied.")}))
   ff
 }
 
@@ -71,7 +72,7 @@ preprocess <- function(ff) {
 }
 
 # function to convert wellIDs to match those attached to flowjo objects
-checkWellNames = function(wellNames) {
+checkwellnames = function(wellNames) {
   #' Check and convert well names to the appropriate format
   #' E.g. A1 -> A01
   #'
