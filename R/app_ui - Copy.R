@@ -38,8 +38,8 @@ app_ui <- function(request) {
                   choices = c("Unsupervised","Supervised")
                 ),
                 uiOutput("columnSelector"),  # Dynamic UI for selecting columns
-                actionButton(inputId = "runClustering", label = "Run Clustering (unsupervised)"),
-                tags$p(),
+
+
                 downloadButton("downloadprocessed", "Download pre-processed .fcs"),
                 downloadButton("downloadcounts", "Download cell counts"),
                 downloadButton("downloadseurat", "Download Seurat Object"),

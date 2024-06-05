@@ -35,7 +35,7 @@ run_unsupervised <- function(flow_data, res = 0.5, logfold = 0.25, percentage_ce
     ref_seurat <- NormalizeData(ref_seurat)
     ref_seurat <- FindVariableFeatures(ref_seurat)#, loess.span = 10)
     ref_seurat <- ScaleData(ref_seurat)
-    ref_seurat <- RunPCA(ref_seurat, "RNA")
+    ref_seurat <- RunPCA(ref_seurat, "RNA", features = VariableFeatures(ref_seurat))
     ref_seurat <- RunUMAP(ref_seurat,dims=1:ncol(ref_seurat$pca), n.components = 3L, return.model = TRUE)
     ref_seurat <- FindNeighbors(ref_seurat, dims = 1:ncol(ref_seurat$pca), reduction = "pca", verbose = TRUE)
     ref_seurat <- FindClusters(ref_seurat, resolution = res, verbose = TRUE)

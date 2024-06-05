@@ -67,9 +67,8 @@ app_server <- function(input, output, session) {
       files <- as.character(shinyFiles::parseFilePaths(volumes, input$files)$datapath)
 
       #
-      #files <- list.files(path="~/2024-1/D0 05022024/Sample plate/", full.names=TRUE, pattern=".fcs")
-
-      #files <- files[files %like% "Samples "]
+      #files <- list.files(path="~/2023-1 BM MPS_Menin/5. Results/All Raw FCS Files/D0/Sample plate/", full.names=TRUE, pattern=".fcs")
+      #files <- files[85]
 
       # Attempt to read in with flowCore
       all_read <- sapply(files, function(x){tryCatch(flowCore::read.FCS(x, alter.names = TRUE, transformation = NULL))})
@@ -101,107 +100,51 @@ app_server <- function(input, output, session) {
         # select channels
         all_ff_a <- lapply(all_ff_rename, channel_select)
 
-       # Remove margin events using PeacoQC's RemoveMargins()
-        all_fc_margin <- lapply(all_ff_a, function(x) {
-          tryCatch({
-            PeacoQC::RemoveMargins(x, channels=1:ncol(x))
-          }, error = function(e) {
-            message("RemoveMargins failed, continuing without")
-            x  # Return the original object on error
-          })
-        })
+        # remove margin events using PeacoQC's RemoveMargins()
+        all_fc_margin <- lapply(all_ff_a, function(x){PeacoQC::RemoveMargins(x, channels=1:ncol(x))})
 
         # QC in time using PeacoQC selecting only time parameter
-        all_fc_qc <- lapply(all_fc_margin, function(x) {
-          tryCatch({
-            PeacoQC::PeacoQC(x, report=FALSE, channels=c("Time"), save_fcs=FALSE)$FinalFF
-          }, error = function(e) {
-            message("PeacoQC failed, continuing without")
-            x  # Return the original object on error
-          })
-        })
+        all_fc_qc <- lapply(all_fc_margin, function(x){tryCatch(PeacoQC::PeacoQC(x, report=FALSE,channels=c("Time"), save_fcs = FALSE)$FinalFF)})
         library(mclust)
         # debris removed with threshold <FSC.H/A 0.3*10^5
-        #all_fc_int <- lapply(all_fc_qc, function(x, threshold = 0.3*10^5){x[x@exprs[,"FSC.A"] > threshold & x@exprs[,"FSC.H"] > threshold,]})
-        all_fc_int <- lapply(all_fc_qc, function(x) {
-          tryCatch({
-            mdl_tmp = mclust::Mclust(x@exprs[,c("FSC.A")], G=2)
-            debris_clus = which.min(mdl_tmp$parameters$mean)
-            x = x[mdl_tmp$classification != names(debris_clus),]
-            x
-          }, error = function(e) {
-          message("Debris removal failed, continuing without")
-          #print(x)
+        all_fc_int <- lapply(all_fc_qc, function(x, threshold = 0.3*10^5){x[x@exprs[,"FSC.A"] > threshold & x@exprs[,"FSC.H"] > threshold,]})
 
-          x
-          })
-        })
+        # single cell identification with linear regression model
+        # Fit a linear regression line
+        fits <- lapply(all_fc_int, function(x){
+          lm(x@exprs[, "FSC.H"] ~ x@exprs[, "FSC.A"])})
 
-        # Fit a linear regression line with error handling
-        fits <- lapply(all_fc_int, function(x) {
-          tryCatch({
-            lm(x@exprs[, "FSC.H"] ~ x@exprs[, "FSC.A"])
-          }, error = function(e) {
-            return(NULL)  # Return NULL if lm fails
-          })
-        })
+        # Get the slope and intercept of the line
+        slopes <- lapply(fits, function(x){coef(x)[2]})
+        intercepts <- lapply(fits, function(x){coef(x)[1]})
 
-        # Remove outliers and select for cell viability if 'Viability' column exists
-        sc_only <- lapply(seq_along(all_fc_int), function(i) {
-          fit <- fits[[i]]
-          if (is.null(fit)) {
-            # If the lm model is NULL, return the original flowFrame (which could be empty)
-            return(all_fc_int[[i]])
-          } else {
-            # Proceed with outlier removal and viability check
-            slope <- coef(fit)[2]
-            intercept <- coef(fit)[1]
-            remove_these <- remove_outliers(all_fc_int[[i]]@exprs[, "FSC.H"], all_fc_int[[i]]@exprs[, "FSC.A"],
-                                            slope = slope, intercept = intercept)
-            dat_tmp <- all_fc_int[[i]][-remove_these,]
+        #  remove_outliers(x$"FSC-H", x$"FSC-A")})
 
-            # Check if 'Viability' column exists before applying the check
-            if ("Viability" %in% colnames(dat_tmp@exprs)) {
-              dat_tmp <- dat_tmp[dat_tmp@exprs[, "Viability"] < 2,]
-            }
+        sc_only <- list()
+        for (i in 1:length(all_fc_int)){
+          remove_these <- remove_outliers(all_fc_int[[i]]@exprs[,"FSC.H"], all_fc_int[[i]]@exprs[, "FSC.A"],
+                                          slope = slopes[[i]],
+                                          intercept = intercepts[[i]])
+          dat_tmp <- all_fc_int[[i]]
+          sc_only[[i]] <- dat_tmp[-remove_these,]
+          sc_only[[i]] <- sc_only[[i]][sc_only[[i]]@exprs[,"Viability"] < 2,] # cell viability
+          seurat_dat <- lapply(sc_only, flowCore::exprs)
 
-            return(dat_tmp)
+          meta_file <- list()
+          for(i in 1:length(seurat_dat)){
+            meta_file[[i]] <- data.frame(t(replicate(nrow(seurat_dat[[i]]),fn_metadata[[i]])))
+            colnames(meta_file[[i]]) <- paste0("filename", 1:ncol(meta_file[[i]]))
           }
-        })
 
-        # Assuming fn_metadata is defined elsewhere and is a list with metadata for each flowFrame
-        # Create a combined metadata and data frame, ensuring matching rows
-        seurat_comb <- lapply(seq_along(sc_only), function(i) {
-          # Extract expression data
-          expr_data <- if (nrow(sc_only[[i]]@exprs) > 0) sc_only[[i]]@exprs else NULL
+          seurat_dat_comb <- as.data.frame(do.call("rbind", seurat_dat))
+          #edu_mdl <- mclust::Mclust(seurat_dat_comb[,c("EdU")], 2)
+          #edu_binary <- ifelse(edu_mdl$classification == which.min(edu_mdl$parameters$mean), 0, 1)
 
-          # Create metadata only if expression data is not NULL
-          if (!is.null(expr_data)) {
-            # Generate metadata dataframe with the correct number of rows
-            metadata_matrix <- t(replicate(nrow(expr_data), fn_metadata[[i]]))
-            metadata_df <- data.frame(metadata_matrix)
-            colnames(metadata_df) <- paste0("filename", seq_len(ncol(metadata_df)))
+          seurat_meta_comb <<- do.call("rbind", meta_file)
+          #seurat_meta_comb$proliferation <- edu_binary
+          rownames(seurat_dat_comb) <- rownames(seurat_meta_comb)
 
-            # Combine expression data and metadata
-            combined_df <- cbind(metadata_df, expr_data)
-            return(combined_df)
-          } else {
-            # Return an empty data frame for empty flowFrames
-            return(data.frame())
-          }
-        })
-
-        # Bind all the combined data frames together
-        seurat_comb_dat <- do.call(rbind, seurat_comb)
-
-        # You can now extract the metadata and data into separate data frames if needed
-        seurat_meta_comb <- seurat_comb_dat[, grep("filename", colnames(seurat_comb_dat))]
-        seurat_dat_comb <- seurat_comb_dat[, !grepl("filename", colnames(seurat_comb_dat))]
-        #seurat_meta_comb$proliferation <- edu_binary
-        rownames(seurat_dat_comb) <- rownames(seurat_meta_comb,)
-
-        return(seurat_dat_comb)
-
+        }
       } else if(input$preprocess == "No"){
         all_exprs <- lapply(all_read, function(x){flowCore::exprs(x)})
         meta_file <- list()
@@ -213,52 +156,47 @@ app_server <- function(input, output, session) {
         seurat_dat_comb <<- as.data.frame(do.call("rbind", all_exprs))
         seurat_meta_comb <<- do.call("rbind", meta_file)
         rownames(seurat_dat_comb) <<- rownames(seurat_meta_comb)
-        return(seurat_dat_comb)
+
       }
+
+
+      # Render column selector dynamically based on uploaded data
+      output$columnSelector <- renderUI({
+        if (!is.null(seurat_dat_comb)) {
+          req(seurat_dat_comb)
+          colnames <- colnames(seurat_dat_comb)
+          checkboxGroupInput("columns", "Select columns for analysis:", choices = colnames, selected = colnames)
+          print(colnames)
+        }
+      })
+
+      if(!is.integer(input$files) & input$model_type == "Unsupervised"){
+
+      # select columns
+      seurat_dat_comb <- seurat_dat_comb[, !(colnames(seurat_dat_comb) %in% input$colnames)]
+      # dimensionality reduction and clustering
+      # convert to seurat first
+
+      seurat_obj <- SeuratObject::CreateSeuratObject(counts=t(seurat_dat_comb), meta.data = seurat_meta_comb)
+      cluster_dat <- run_unsupervised(seurat_obj, res=as.numeric(input$res_umap), logfold=as.numeric(input$lf_umap))
+
+      #out_dat <<- files_all()
+      return(cluster_dat)
+    } else if (!is.integer(input$files) & input$model_type == "Supervised"){
+
     }
-  })
-
-
-  # Render column selector dynamically based on uploaded data
-  output$columnSelector <- renderUI({
-      req(files_all())
-      colnames <- colnames(seurat_dat_comb)
-      checkboxGroupInput("columns", "Select columns for analysis:", choices = colnames, selected = colnames)
-  })
-
-  cluster_dat <- eventReactive(input$runClustering, {
-    if(!is.integer(input$files) & input$model_type == "Unsupervised"){
-    req(input$columns)
-    # select columns
-    seurat_dat_comb <- seurat_dat_comb[, (colnames(seurat_dat_comb) %in% input$columns)]
-    seurat_dat_comb <- apply(seurat_dat_comb, 2, norm_minmax)
-    # dimensionality reduction and clustering
-    # convert to seurat first
-
-    seurat_obj <- SeuratObject::CreateSeuratObject(counts=t(seurat_dat_comb), meta.data = seurat_meta_comb)
-    #test <- flowCore::read.FCS("~/App_benchmarking_autoflow/Mosmann_rare.fcs")
-    #test_dat <- data.frame(test@exprs)
-    #test_dat_select <- test_dat[,!(colnames(test_dat) %in% c("FSC.A", "FSC.H", "FSC.W", "SSC.A", "SSC.H",
-    #                                                         "SSC.W", "Live_Dead", "Time", "label"))]
-    #test_cluster <- run_unsupervised(test_dat_select)
-    cluster_dat <- run_unsupervised(seurat_obj, res=as.numeric(input$res_umap), logfold=as.numeric(input$lf_umap))
-
-    #out_dat <<- files_all()
-    return(cluster_dat)
-  } else if (!is.integer(input$files) & input$model_type == "Supervised"){
-
-  }
-})
+    }
+    })
 
   # Define a reactive expression to handle out_dat
   out_dat_reactive <- reactive({
-    cluster_dat()
+    files_all()
   })
 
   # Observe changes in out_dat_reactive
   observe({
     out_dat <- out_dat_reactive()
-    #print(out_dat)
+    print(out_dat)
   })
   output$plotdata <- plotly::renderPlotly({
     req(out_dat_reactive)  # Ensure out_dat is not NULL before proceeding
@@ -298,18 +236,11 @@ app_server <- function(input, output, session) {
       print(out_dat@meta.data)
       library(dplyr)
       seurat_metadata <<- out_dat@meta.data
-      summary_tab <<- if("proliferation" %in% seurat_metadata){
-        seurat_metadata %>%
+      summary_tab <<- seurat_metadata %>%
         group_by(eval(parse(text=paste0("filename", ncol(seurat_meta_comb)))), assignment, proliferation) %>%
         summarise("count" = n()) %>%
         setNames(c("filename", "assignment", "proliferation", "count"))
-      } else {
-        seurat_metadata %>%
-          group_by(eval(parse(text=paste0("filename", ncol(seurat_meta_comb)))), assignment) %>%
-          summarise("count" = n()) %>%
-          setNames(c("filename", "assignment", "count"))
-      }
-        summary_tab
+      summary_tab
     }
   })
 

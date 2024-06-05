@@ -6,11 +6,10 @@
 # pre-process functions
 preprocess_2 <- function(ff){
   ff <- flowCore::compensate(ff, flowCore::keyword(ff)$SPILL)
-  ff <- tryCatch(flowCore::transform(ff,
+  ff <- flowCore::transform(ff,
                             flowCore::estimateLogicle(ff,
-                                                      colnames(flowCore::keyword(ff)$SPILL)),
-                            error = function(x){cat("SPILL keyword not found, no conpensation applied.")}))
-  ff
+                                                      colnames(flowCore::keyword(ff)$SPILL)))
+  #scale(ff)
 }
 
 channel_select <- function(ff){
@@ -72,7 +71,7 @@ preprocess <- function(ff) {
 }
 
 # function to convert wellIDs to match those attached to flowjo objects
-checkwellnames = function(wellNames) {
+checkWellNames = function(wellNames) {
   #' Check and convert well names to the appropriate format
   #' E.g. A1 -> A01
   #'
@@ -129,4 +128,36 @@ remove_outliers <- function(x, y, p = 0.05, slope, intercept) {
 
   # Return the new data without outliers
   return(outliers)
+}
+
+log_transform_with_shift <- function(data) {
+  min_value <- min(data)
+
+  # Calculate the shift based on the minimum value
+  shift <- ifelse(min_value < 0, abs(min_value) + 1, 0)
+
+  # Log-transform the adjusted data
+  log_transformed_data <- log(data + shift)
+
+  return(log_transformed_data)
+}
+
+
+cell_labelling_bm <- function(seur) {
+  library(stringr)
+  seur$cell_type <- ifelse(str_detect(seur$assignment, "CD34\\+"), "HSC",
+                           ifelse(str_detect(seur$assignment, "CD38\\+"), "LDPs",
+                                  ifelse(str_detect(seur$assignment, "CD13\\+") & str_detect(seur$assignment, "CD16\\+"), "Late Granulocytes",
+                                         ifelse(str_detect(seur$assignment, "CD13\\+") & str_detect(seur$assignment, "CD36\\+"), "Late Monocytes",
+                                                ifelse(str_detect(seur$assignment, "CD13\\+"), "Early Granulocytes",
+                                                       ifelse(str_detect(seur$assignment, "CD36\\+") & str_detect(seur$assignment, "CD71\\+"), "Early Erythroid",
+                                                              ifelse(str_detect(seur$assignment, "CD41\\+") | str_detect(seur$assignment, "CD42b\\+"), "Megakaryocytes",
+                                                                     ifelse(str_detect(seur$assignment, "CD235a\\+"), "Late Erythroid", seur$assignment))))))))
+
+  return(seur)
+}
+
+norm_minmax <- function(x){
+  tmp = (x - min(x)) / (max(x) - min(x))
+  return(tmp)
 }
