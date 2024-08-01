@@ -9,8 +9,11 @@
 #' @export
 #' @noRd
 app_server <- function(input, output, session) {
-  volumes <- c(Home = fs::path_home(), "R Installation" = R.home(), shinyFiles::getVolumes()())
+  #volumes <- c(Home = fs::path_home(), "R Installation" = R.home(), shinyFiles::getVolumes()())
   #shinyFiles::shinyDirChoose(input, "directory", roots = volumes, session = session, restrictions = system.file(package = "base"))
+
+  # Define the directories you want to include
+  volumes <- c("Home (~)" = '~', "Current directory" = getwd(), "Root (/)" = '/')
 
   ## button changes after clicking and selection
   observe({
@@ -47,6 +50,13 @@ app_server <- function(input, output, session) {
   #    return("Supervised")
   #  }
   #})
+  ## button changes after clicking and selection
+  shinyFiles::shinyFileChoose(input, "model_supervised", roots = volumes, session = session, restrictions = system.file(package = "base"))
+  observe({
+    cat("\ninput$model_supervised value:\n\n")
+    print(input$model_supervised)
+  })
+
 
   output$meta_directory <- renderPrint({
     if (is.integer(input$directory_meta) &
@@ -71,11 +81,17 @@ app_server <- function(input, output, session) {
 
       #files <- files[files %like% "Samples "]
 
+      #files <- list.files("~/Miltenyi Immunoprofiling plates/CD14+ Day0 Miltenyi immunoprofiling plates/Raw/Plate_001/Group_001/", pattern="fcs", full.names = TRUE)
+
+      #read.FCS(files[[1]])
       # Attempt to read in with flowCore
       all_read <- sapply(files, function(x){tryCatch(flowCore::read.FCS(x, alter.names = TRUE, transformation = NULL))})
 
       # extract file name folders for metadata
-      fn_metadata <- stringr::str_split(files, "/")
+      # add wells
+      wells <- lapply(all_read, function(x) x@description$"WELL ID")
+      files_add <- paste(files, wells, sep="/")
+      fn_metadata <- stringr::str_split(files_add, "/")
       #####
 
       if(input$preprocess == "Yes"){
@@ -206,7 +222,7 @@ app_server <- function(input, output, session) {
         all_exprs <- lapply(all_read, function(x){flowCore::exprs(x)})
         meta_file <- list()
         for(i in 1:length(all_exprs)){
-          meta_file[[i]] <- data.frame(t(replicate(nrow(all_exprs[[i]]),fn_metadata[[i]])))
+          meta_file[[i]] <- data.frame(t(replicate(nrow(all_exprs[[i]]),c(files[[i]], fn_metadata[[i]]))))
           colnames(meta_file[[i]]) <- paste0("filename", 1:ncol(meta_file[[i]]))
 
         }
@@ -234,19 +250,65 @@ app_server <- function(input, output, session) {
     seurat_dat_comb <- apply(seurat_dat_comb, 2, norm_minmax)
     # dimensionality reduction and clustering
     # convert to seurat first
-
+    # condition to sample to reduce computation
+    if (nrow(seurat_dat_comb) > 1e5){
+      sample_rows = sample(nrow(seurat_dat_comb), 1e5)
+      seurat_dat_comb <- seurat_dat_comb[sample_rows,]
+      seurat_meta_comb <- seurat_meta_comb[sample_rows,]
+    }
+    #sample_rows
     seurat_obj <- SeuratObject::CreateSeuratObject(counts=t(seurat_dat_comb), meta.data = seurat_meta_comb)
     #test <- flowCore::read.FCS("~/App_benchmarking_autoflow/Mosmann_rare.fcs")
     #test_dat <- data.frame(test@exprs)
     #test_dat_select <- test_dat[,!(colnames(test_dat) %in% c("FSC.A", "FSC.H", "FSC.W", "SSC.A", "SSC.H",
     #                                                         "SSC.W", "Live_Dead", "Time", "label"))]
     #test_cluster <- run_unsupervised(test_dat_select)
+
     cluster_dat <- run_unsupervised(seurat_obj, res=as.numeric(input$res_umap), logfold=as.numeric(input$lf_umap))
 
     #out_dat <<- files_all()
     return(cluster_dat)
-  } else if (!is.integer(input$files) & input$model_type == "Supervised"){
+  } else if (!is.integer(input$files) & input$model_type == "Supervised" & !is.integer(input$model_supervised)){
+    #############################################
+    # Apply Cell type model
+    #############################################
+    # read in model
+    celltype_mdl <- readRDS(as.character(shinyFiles::parseFilePaths(volumes, input$model_supervised)$datapath))
 
+    # features for model
+    features_mdl <- names(celltype_mdl$forest$xlevels)
+    cat(paste0("features for model: ", feature_mdl))
+
+    # predict on data
+    seurat_dat_comb <- seurat_dat_comb[, (colnames(seurat_dat_comb) %in% input$columns)]
+    seurat_dat_comb <- apply(seurat_dat_comb, 2, norm_minmax)
+
+    cat("\n Running cell type model...")
+    class_pred <- tryCatch({
+      predict(celltype_mdl, seurat_dat_comb[, colnames(seurat_dat_comb) %in% features_mdl])
+    }, error = function(e) {
+      # Return a vector of NAs with the same length as the number of rows in seurat_dat_comb#
+      cat("supervised model failed - returning NA. Check features align with those in model, or try Unsupervised.")
+      rep(NA, nrow(seurat_dat_comb))
+    })
+
+    seurat_meta_comb$assignment <- class_pred
+
+    #  Define the custom S4 class - ease of access later
+    setClass(
+      "ClusterData",
+      slots = list(
+        data = "data.frame",
+        meta.data = "data.frame"
+      )
+    )
+
+    # Step 2: Create an instance of the class
+    cluster_dat <- new("ClusterData",
+                       data = seurat_dat_comb,
+                       meta.data = seurat_meta_comb)
+
+    return(cluster_dat)
   }
 })
 
@@ -263,7 +325,7 @@ app_server <- function(input, output, session) {
   output$plotdata <- plotly::renderPlotly({
     req(out_dat_reactive)  # Ensure out_dat is not NULL before proceeding
     out_dat <- out_dat_reactive()  # Retrieve the value
-    if (!is.null(out_dat)) {
+    if (!is.null(out_dat) & input$model_type == "Unsupervised") {
       # all_files <- list.files("~/R_Code/2019-06/2019-6 Data/D46 04-11-19/", recursive=TRUE, pattern="fcs", full.names = TRUE)
       #all_read <- sapply(all_files, function(x){tryCatch(read.flowSet(x, alter.names=FALSE, transform=NULL), error=function(e){})})
       #autoplot(all_read[[1]], "AmCyan.A", "SSC.A")
@@ -287,7 +349,7 @@ app_server <- function(input, output, session) {
                       mode = "markers",
                       marker = list(size = 1, width=2), #This is that extra column we made earlier for which we will use for cell ID
                       hoverinfo="text",
-                      size = 10, alpha = I(1), text =~assignment) #When you visualize your plotly object, hovering your mouse pointer over a point shows cell names
+                      size = 10, alpha = I(1), text =~assignment, showlegend = FALSE) #When you visualize your plotly object, hovering your mouse pointer over a point shows cell names
 
     }
   })
@@ -300,14 +362,14 @@ app_server <- function(input, output, session) {
       seurat_metadata <<- out_dat@meta.data
       summary_tab <<- if("proliferation" %in% seurat_metadata){
         seurat_metadata %>%
-        group_by(eval(parse(text=paste0("filename", ncol(seurat_meta_comb)))), assignment, proliferation) %>%
+        group_by(eval(parse(text=paste0("filename", 1))), assignment, proliferation) %>%
         summarise("count" = n()) %>%
-        setNames(c("filename", "assignment", "proliferation", "count"))
+        setNames(c("filename1", "assignment", "proliferation", "count"))
       } else {
         seurat_metadata %>%
-          group_by(eval(parse(text=paste0("filename", ncol(seurat_meta_comb)))), assignment) %>%
+          group_by(eval(parse(text=paste0("filename", 1))), assignment) %>%
           summarise("count" = n()) %>%
-          setNames(c("filename", "assignment", "count"))
+          setNames(c("filename1", "assignment", "count"))
       }
         summary_tab
     }

@@ -11,7 +11,14 @@ preprocess_2 <- function(ff){
                                                       colnames(flowCore::keyword(ff)$SPILL)))
   #scale(ff)
 }
-
+preprocess_3 <- function(ff){
+  ff <- flowCore::compensate(ff, flowCore::keyword(ff)$SPILL)
+  ff <- flowCore::transform(ff,
+                            flowCore::estimateLogicle(ff,
+                                                      colnames(flowCore::keyword(ff)$SPILL)))
+  ff <- flowStats::gaussNorm(flowSet(ff), channel.names = colnames(flowCore::keyword(ff)$SPILL))
+  #scale(ff)
+}
 channel_select <- function(ff){
   library(data.table)
   ff = ff[,c((flowCore::colnames(ff) %like% ".A") | flowCore::colnames(ff) %like% "Time") | flowCore::colnames(ff) %like% "FSC.H" | flowCore::colnames(ff) %in% marker_panel$Marker]

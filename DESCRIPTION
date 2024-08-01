@@ -1,18 +1,22 @@
-Package: AutoFlowV1Full
-Title: An Amazing Shiny App
+Package: AutoFlow
+Title: An application for autogating flow cytometry data using machine learning.
 Version: 0.0.0.9000
 Authors@R: 
-    person(given = "firstname",
-           family = "lastname",
+    person(given = "Freya",
+           family = "Woods",
            role = c("aut", "cre"),
-           email = "your@email.com")
-Description: What the package does (one paragraph).
-License: What license is it under?
+           email = "freya.woods@astrazeneca.com")
+Description: Autogates flow cytometry data using an option of 2 methodologies; supervised and unsupervised machine learning.
+License: MIT
 Imports: 
     config (>= 0.3.2),
     e1071,
     golem (>= 0.4.1),
-    shiny (>= 1.8.0)
+    shiny (>= 1.8.0),
+    Seurat,
+    dplyr,
+    flowCore,
+    mclust
 Encoding: UTF-8
 LazyData: true
-RoxygenNote: 7.3.1
+RoxygenNote: 7.3.2
