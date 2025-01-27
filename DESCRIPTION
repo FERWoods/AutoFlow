@@ -1,0 +1,41 @@
+Package: autoflow
+Title: AutoGating for flow cytomotry data.
+Version: 2.0.0
+Authors@R: 
+    person("Freya", "Woods", , "freyawoods94@gmail.com", role = c("aut", "cre"))
+Description: An autogating application for flow cytometry data containing
+    a supervised machine learning workflow and an unsupervised working.
+License: MIT + file LICENSE
+URL: https://github.com/FERWoods/Autoflow
+BugReports: https://github.com/FERWoods/Autoflow/issues
+Imports: 
+    config,
+    data.table,
+    dplyr,
+    DT,
+    flowCore,
+    flowStats,
+    fs,
+    golem,
+    mclust,
+    PeacoQC,
+    pkgload,
+    plotly,
+    readr,
+    readxl,
+    Seurat,
+    SeuratObject,
+    shiny,
+    shinyFiles,
+    shinythemes,
+    stringr,
+    tidyr,
+    tools
+Suggests: 
+    spelling,
+    testthat (>= 3.0.0)
+Config/testthat/edition: 3
+Encoding: UTF-8
+Language: en-US
+LazyData: true
+RoxygenNote: 7.3.2
