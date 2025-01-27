@@ -23,10 +23,12 @@ Welcome to AutoFlow. This application processes flow cytometry data, performs va
 
 ## Installation
 
-Install the package locally in R with:
-r
-devtools::install_github("AutoFlowApp") 
-library(AutoFlowApp) 
+Install the package from github with:
+devtools::install_github("FERWoods/AutoFlow")
+or
+remotes::install_github("FERWoods/AutoFlow")
+
+library(autoflow) 
 run_app() ```
 
 ## Getting Started
