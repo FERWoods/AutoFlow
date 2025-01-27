@@ -28,7 +28,7 @@ devtools::install_github("FERWoods/AutoFlow")
 or
 remotes::install_github("FERWoods/AutoFlow")
 
-library(autoflow) 
+library(AutoFlow) 
 run_app() ```
 
 ## Getting Started
