@@ -148,8 +148,9 @@ app_server <- function(input, output, session) {
             data.frame()
           }
         })
-        print(colnames(seurat_comb_dat))
         seurat_comb_dat <- do.call(rbind, seurat_comb)
+        print(colnames(seurat_comb_dat))
+
         seurat_meta_comb <<- seurat_comb_dat[, grepl("filename", colnames(seurat_comb_dat))]
         seurat_dat_comb <<- seurat_comb_dat[, !grepl("filename", colnames(seurat_comb_dat))]
 
