@@ -78,16 +78,20 @@ app_server <- function(input, output, session) {
       all_read <- Filter(Negate(is.null), all_read)  # Remove NULL entries
 
       # Extract metadata from FCS files
-      fn_metadata <- lapply(all_read, function(fcs_obj) {
+      fn_metadata <<- lapply(seq_along(all_read), function(i) {
+        fcs_obj <- all_read[[i]]
         meta <- as.data.frame(fcs_obj@description)[1, , drop = FALSE]
+
         well <- if ("WELL.ID" %in% colnames(meta) && "FILENAME" %in% colnames(meta)) {
-          ifelse(!is.na(meta$WELL.ID), meta$WELL.ID, basename(meta$FILENAME))
+          ifelse(!is.na(meta$WELL.ID), meta$WELL.ID, basename(files[i]))
         } else {
           NA
         }
-        paste(basename(files), well, sep = "/")
-      })
 
+        # Pair the specific filename with metadata
+        paste(basename(files[i]), well, sep = "/")
+      })
+      print(fn_metadata)
       if (input$preprocess == "Yes") {
         cat("\nRunning compensation and transformation\n")
 
@@ -118,7 +122,7 @@ app_server <- function(input, output, session) {
           if (!is.null(fit)) {
             slope <- coef(fit)[2]
             intercept <- coef(fit)[1]
-            remove_these <- remove_outliers(all_fc_int[[i]]@exprs[, "FSC.H"], all_fc_int[[i]]@exprs[, "FSC.A"], slope, intercept)
+            remove_these <- remove_outliers(all_fc_int[[i]]@exprs[, "FSC.H"], all_fc_int[[i]]@exprs[, "FSC.A"], slope=slope, intercept=intercept)
             fcs_obj <- all_fc_int[[i]][-remove_these, ]
             if ("Viability" %in% colnames(fcs_obj@exprs)) {
               fcs_obj <- fcs_obj[fcs_obj@exprs[, "Viability"] < 2, ]
@@ -130,11 +134,13 @@ app_server <- function(input, output, session) {
         })
 
         # Standardize column names and combine metadata with expression data
-        sc_only_rename <- lapply(sc_only, processFCS)
-        seurat_comb <- lapply(seq_along(sc_only_rename), function(i) {
+        sc_only_rename <<- lapply(sc_only, processFCS)
+        seurat_comb <<- lapply(seq_along(sc_only_rename), function(i) {
           expr_data <- sc_only_rename[[i]]@exprs
           if (nrow(expr_data) > 0) {
             metadata_df <- as.data.frame(t(replicate(nrow(expr_data), fn_metadata[[i]])))
+            print(metadata_df)
+            print(fn_metadata[i])
             colnames(metadata_df) <- paste0("filename", seq_len(ncol(metadata_df)))
             cbind(metadata_df, expr_data)
           } else {
@@ -335,6 +341,8 @@ app_server <- function(input, output, session) {
         summary_tab <<- seurat_metadata %>%
           left_join(summary_counts, by = c("Sample", "assignment"), keep = FALSE) %>%
           select(-nCount_RNA)
+        summary_tab <<- summary_tab %>%
+          distinct()
       }
 
       summary_tab
@@ -376,11 +384,14 @@ app_server <- function(input, output, session) {
         #print(out_dat@meta.data)
         seurat_metadata <- out_dat@meta.data
         summary_tab_prep <- summary_tab %>%
-          mutate(assignment = paste0(assignment, " Count")) %>% # Adds '_count' to assignment #
+          mutate(assignment = paste0(assignment, " Count")) %>%
           mutate(count = as.numeric(count),
                  assignment = as.character(assignment))
+        #print(summary_tab_prep)
         seurat_metadata_wide <- summary_tab_prep %>%
-          pivot_wider(names_from = assignment, values_from = count, values_fill = list(count = 0))
+          pivot_wider(names_from = assignment,
+                      values_from = count,
+                      values_fill = list(count = 0))
         # Write the wide-format data to a CSV file
         write.csv(seurat_metadata_wide, fname, row.names = FALSE)
       }
@@ -448,13 +459,13 @@ app_server <- function(input, output, session) {
   })
   observe({
     if (!is.null(out_dat_reactive())) {
-      print("Debug: out_dat_reactive is valid")
+      #print("Debug: out_dat_reactive is valid")
       # Only print inputs if out_dat_reactive is ready
-      print(paste("Debug: input$color_column =", input$color_column))
-      print(paste("Debug: input$x_column =", input$x_column))
-      print(paste("Debug: input$cell_assignment =", input$cell_assignment))
+      #print(paste("Debug: input$color_column =", input$color_column))
+      #print(paste("Debug: input$x_column =", input$x_column))
+      #print(paste("Debug: input$cell_assignment =", input$cell_assignment))
     } else {
-      print("Debug: Skipping observe logic because out_dat_reactive is NULL")
+      #print("Debug: Skipping observe logic because out_dat_reactive is NULL")
     }
   })
 
@@ -827,5 +838,16 @@ find_common_columns <- function(df1, df2) {
   return(common_cols)
 }
 
+# Check each fcsObject's column names after applying `processFCS`
+processFCS <- function(fcsObject) {
+  library(flowWorkspace)
+  library(flowCore)
+  param_names <- pData(parameters(fcsObject))[,"name"]
+  param_desc <- pData(parameters(fcsObject))[,"desc"]
+  final_colnames <- ifelse(!is.na(param_desc) & param_desc != "", param_desc, param_names)
 
+
+  colnames(fcsObject) <- final_colnames
+  return(fcsObject)
+}
 
