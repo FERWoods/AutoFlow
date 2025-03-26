@@ -91,7 +91,8 @@ app_server <- function(input, output, session) {
         # Pair the specific filename with metadata
         paste(basename(files[i]), well, sep = "/")
       })
-      print(fn_metadata)
+      print(paste0("fnmeta_check:", fn_metadata))
+      print(paste0("basename_files:", basename(files)))
       if (input$preprocess == "Yes") {
         cat("\nRunning compensation and transformation\n")
 
