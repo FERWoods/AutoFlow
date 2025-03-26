@@ -138,9 +138,10 @@ app_server <- function(input, output, session) {
         seurat_comb <<- lapply(seq_along(sc_only_rename), function(i) {
           expr_data <- sc_only_rename[[i]]@exprs
           if (nrow(expr_data) > 0) {
-            metadata_df <- as.data.frame(t(replicate(nrow(expr_data), fn_metadata[[i]])))
-            print(metadata_df)
-            print(fn_metadata[i])
+            metadata_vector <- fn_metadata[[i]]
+
+            # Transpose the metadata to match nrow with expr_data
+            metadata_df <- as.data.frame(t(matrix(metadata_vector, nrow = length(metadata_vector), ncol = nrow(expr_data))))
             colnames(metadata_df) <- paste0("filename", seq_len(ncol(metadata_df)))
             cbind(metadata_df, expr_data)
           } else {
@@ -165,11 +166,17 @@ app_server <- function(input, output, session) {
       } else if (input$preprocess == "No") {
         all_exprs <- lapply(all_read, flowCore::exprs)
         meta_file <- lapply(seq_along(all_exprs), function(i) {
-          metadata <- as.data.frame(t(replicate(nrow(all_exprs[[i]]), fn_metadata[[i]])))
-          colnames(metadata) <- paste0("filename", seq_len(ncol(metadata)))
-          metadata
+          metadata_vector <- fn_metadata[[i]]
+          expr_data <- all_exprs[[i]]
+
+          # Transpose the metadata to match nrow with expr_data
+          metadata_df <- as.data.frame(t(matrix(metadata_vector, nrow = length(metadata_vector), ncol = nrow(expr_data))))
+          colnames(metadata_df) <- paste0("filename", seq_len(ncol(metadata_df)))
+          #cbind(metadata_df, expr_data)
+          metadata_df
         })
-        seurat_dat_comb <<- as.data.frame(do.call("rbind", all_exprs))
+        seurat_dat_comb <<- as.data.frame(do.call("rbind",
+                                                  all_exprs))
         seurat_meta_comb <<- do.call("rbind", meta_file)
         rownames(seurat_dat_comb) <<- rownames(seurat_meta_comb)
         return(seurat_dat_comb)
