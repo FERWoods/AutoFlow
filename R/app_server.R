@@ -149,19 +149,20 @@ app_server <- function(input, output, session) {
           }
         })
         seurat_comb_dat <- do.call(rbind, seurat_comb)
-        print(colnames(seurat_comb_dat))
+        #print(colnames(seurat_comb_dat))
 
-        seurat_meta_comb <<- seurat_comb_dat[, grepl("filename", colnames(seurat_comb_dat))]
-        seurat_dat_comb <<- seurat_comb_dat[, !grepl("filename", colnames(seurat_comb_dat))]
+        seurat_meta_comb <<- seurat_comb_dat[, grepl("filename", colnames(seurat_comb_dat)),drop=FALSE]
+        seurat_dat_comb <<- seurat_comb_dat[, !grepl("filename", colnames(seurat_comb_dat)),drop=FALSE]
 
         # Merge user-provided metadata
         if (!is.null(input$metadata_file)) {
+          print("User uploaded metadata file - merging!")
           meta_file <- read_file(input$metadata_file$datapath)
           common_cols <- find_common_columns(seurat_meta_comb, meta_file)
           merged_data <- merge(seurat_meta_comb, meta_file, by = common_cols, all.x = TRUE)
           seurat_meta_comb <<- merged_data
         }
-        print(paste0("meta_check:", seurat_meta_comb))
+        #print(paste0("meta_check:", seurat_meta_comb))
 
         rownames(seurat_dat_comb) <<- rownames(seurat_meta_comb)
         return(seurat_dat_comb)
@@ -210,6 +211,7 @@ app_server <- function(input, output, session) {
         seurat_dat_comb <- seurat_dat_comb[sample_rows,]
         seurat_meta_comb <- seurat_meta_comb[sample_rows,]
       }
+      seurat_meta_comb
       print(colnames(seurat_meta_comb))
       seurat_obj <- SeuratObject::CreateSeuratObject(counts=t(seurat_dat_comb), meta.data = seurat_meta_comb)
       cluster_dat <- run_unsupervised_func(seurat_obj, res=as.numeric(input$res_umap), logfold=as.numeric(input$lf_umap))
