@@ -91,8 +91,7 @@ app_server <- function(input, output, session) {
         # Pair the specific filename with metadata
         paste(basename(files[i]), well, sep = "/")
       })
-      print(paste0("fnmeta_check:", fn_metadata))
-      print(paste0("basename_files:", basename(files)))
+#      print(paste0("basename_files:", basename(files)))
       if (input$preprocess == "Yes") {
         cat("\nRunning compensation and transformation\n")
 
@@ -149,7 +148,7 @@ app_server <- function(input, output, session) {
             data.frame()
           }
         })
-
+        print(colnames(seurat_comb_dat))
         seurat_comb_dat <- do.call(rbind, seurat_comb)
         seurat_meta_comb <<- seurat_comb_dat[, grepl("filename", colnames(seurat_comb_dat))]
         seurat_dat_comb <<- seurat_comb_dat[, !grepl("filename", colnames(seurat_comb_dat))]
@@ -161,6 +160,7 @@ app_server <- function(input, output, session) {
           merged_data <- merge(seurat_meta_comb, meta_file, by = common_cols, all.x = TRUE)
           seurat_meta_comb <<- merged_data
         }
+        print(paste0("meta_check:", seurat_meta_comb))
 
         rownames(seurat_dat_comb) <<- rownames(seurat_meta_comb)
         return(seurat_dat_comb)
