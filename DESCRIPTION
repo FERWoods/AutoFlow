@@ -8,18 +8,19 @@ License: MIT + file LICENSE
 URL: https://github.com/FERWoods/AutoFlow
 BugReports: https://github.com/FERWoods/AutoFlow/issues
 Imports: 
+    biocthis,
     config,
     data.table,
     dplyr,
     DT,
     e1071,
-    flowCore,
-    flowStats,
+    flowCore (>= 2.12.2),
+    flowStats (>= 4.12.0),
     fs,
     ggplot2,
     golem,
     mclust,
-    PeacoQC,
+    PeacoQC (>= 1.10.0),
     pkgload,
     plotly,
     randomForest,
@@ -43,3 +44,7 @@ Encoding: UTF-8
 Language: en-US
 LazyData: true
 RoxygenNote: 7.3.2
+Remotes:  
+    RGLab/flowCore,
+    bioc::PeacoQC,
+    bioc::flowStats

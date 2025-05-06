@@ -19,7 +19,7 @@
 usethis::use_package("dplyr")
 usethis::use_package("config")
 usethis::use_package("fs")
-usethis::use_package("flowCore")
+#usethis::use_package("flowCore")
 usethis::use_package("Seurat")
 usethis::use_package("plotly")
 usethis::use_package("ggplot2")
@@ -32,16 +32,21 @@ usethis::use_package("DT")
 usethis::use_package("shinyjs")
 usethis::use_package("randomForest")
 usethis::use_package("e1071")
-usethis::use_package("PeacoQC")
+#usethis::use_package("PeacoQC")
 usethis::use_package("SeuratObject")
-usethis::use_package("flowStats")
+#usethis::use_package("flowStats")
 usethis::use_package("data.table")
 usethis::use_package("readr")
 usethis::use_package("readxl")
 usethis::use_package("stringr")
 usethis::use_package("tidyr")
 usethis::use_package("tools")
+usethis::use_package("biocthis")
 
+## ---- Add Bioconductor Remotes ----
+usethis::use_dev_package("flowCore", type = "Imports", remote = "RGLab/flowCore")
+usethis::use_dev_package("PeacoQC", type = "Imports", remote = "bioc::PeacoQC")
+usethis::use_dev_package("flowStats", type = "Imports", remote = "bioc::flowStats")
 
 
 ## Add modules ----
