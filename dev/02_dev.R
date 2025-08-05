@@ -41,12 +41,13 @@ usethis::use_package("readxl")
 usethis::use_package("stringr")
 usethis::use_package("tidyr")
 usethis::use_package("tools")
-usethis::use_package("biocthis")
 
 ## ---- Add Bioconductor Remotes ----
 usethis::use_dev_package("flowCore", type = "Imports", remote = "RGLab/flowCore")
 usethis::use_dev_package("PeacoQC", type = "Imports", remote = "bioc::PeacoQC")
 usethis::use_dev_package("flowStats", type = "Imports", remote = "bioc::flowStats")
+usethis::use_dev_package("biocthis", type = "Imports", remote = "bioc::biocthis")
+usethis::use_dev_package("flowWorkspace", type = "Imports", remote = "bioc::flowWorkspace")
 
 
 ## Add modules ----

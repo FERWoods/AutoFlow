@@ -1,50 +1,53 @@
 Package: autoflow
 Title: Autogating for flow cytometry data
-Version: 2.0.0
+Version: 3.0.0
 Authors@R: 
     person("Freya", "Woods", , "freyawoods94@gmail.com", role = c("aut", "cre"))
-Description: An autogating application for flow cytometry data containing a supervised machine learning workflow and an unsupervised working.
+Description: An autogating application for flow cytometry data containing
+    a supervised machine learning workflow and an unsupervised working.
 License: MIT + file LICENSE
 URL: https://github.com/FERWoods/AutoFlow
 BugReports: https://github.com/FERWoods/AutoFlow/issues
 Imports: 
-    biocthis,
     config,
     data.table,
     dplyr,
     DT,
-    e1071,
-    flowCore (>= 2.12.2),
-    flowStats (>= 4.12.0),
+    flowCore (>= 2.17.1),
+    flowStats (>= 4.20.0),
+    flowWorkspace,
     fs,
-    ggplot2,
     golem,
     mclust,
-    PeacoQC (>= 1.10.0),
-    pkgload,
+    PeacoQC (>= 1.18.0),
     plotly,
-    randomForest,
     readr,
     readxl,
     Seurat,
     SeuratObject,
     shiny,
-    shinycssloaders,
     shinyFiles,
-    shinyjs,
     shinythemes,
     stringr,
     tidyr,
     tools
 Suggests: 
+    caret,
+    flowUtils,
+    ggcyto,
+    ggplot2,
+    gtools,
+    knitr,
+    patchwork,
+    randomForest,
+    rmarkdown,
     spelling,
-    testthat (>= 3.0.0)
+    testthat (>= 3.0.0),
+    viridis
+Remotes: 
+    RGLab/flowCore
 Config/testthat/edition: 3
 Encoding: UTF-8
 Language: en-US
 LazyData: true
 RoxygenNote: 7.3.2
-Remotes:  
-    RGLab/flowCore,
-    bioc::PeacoQC,
-    bioc::flowStats
