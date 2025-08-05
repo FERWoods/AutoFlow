@@ -851,7 +851,7 @@ find_common_columns <- function(df1, df2) {
 
 # Check each fcsObject's column names after applying `processFCS`
 processFCS <- function(fcsObject) {
-  library(flowWorkspace)
+  #library(flowWorkspace)
   library(flowCore)
   param_names <- pData(parameters(fcsObject))[,"name"]
   param_desc <- pData(parameters(fcsObject))[,"desc"]
