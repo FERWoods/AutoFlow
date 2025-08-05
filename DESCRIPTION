@@ -46,6 +46,10 @@ Suggests:
     viridis
 Remotes: 
     RGLab/flowCore
+    bioc::PeacoQC,
+    bioc::flowWorkspace,
+    bioc::flowStats,
+    bioc::biocthis
 Config/testthat/edition: 3
 Encoding: UTF-8
 Language: en-US
