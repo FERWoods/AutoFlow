@@ -45,7 +45,7 @@ Suggests:
     testthat (>= 3.0.0),
     viridis
 Remotes: 
-    RGLab/flowCore
+    RGLab/flowCore,
     bioc::PeacoQC,
     bioc::flowWorkspace,
     bioc::flowStats,
