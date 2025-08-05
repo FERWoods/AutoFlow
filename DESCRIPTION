@@ -15,7 +15,6 @@ Imports:
     DT,
     flowCore (>= 2.17.1),
     flowStats (>= 4.20.0),
-    flowWorkspace,
     fs,
     golem,
     mclust,
@@ -47,7 +46,6 @@ Suggests:
 Remotes: 
     RGLab/flowCore,
     bioc::PeacoQC,
-    bioc::flowWorkspace,
     bioc::flowStats,
     bioc::biocthis
 Config/testthat/edition: 3
