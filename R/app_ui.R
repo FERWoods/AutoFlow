@@ -63,6 +63,14 @@ app_ui <- function(request) {
 
       mainPanel(
         tabsetPanel(
+          selected = "Welcome",  # Default to README tab first
+
+          tabPanel(
+            "Welcome",
+            includeMarkdown(
+              system.file("README.md", package = "autoflow") # path to README
+            ),
+          ),
           id = "tabs",
           type = "tabs",
           tabPanel("Cell count table", DT::dataTableOutput("tablecounts")),
