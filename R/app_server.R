@@ -167,7 +167,8 @@ app_server <- function(input, output, session) {
         rownames(seurat_dat_comb) <<- rownames(seurat_meta_comb)
         return(seurat_dat_comb)
       } else if (input$preprocess == "No") {
-        all_exprs <- lapply(all_read, flowCore::exprs)
+        no_pp_rename <<- lapply(all_read, processFCS) #rename using labels from flow cytometry
+        all_exprs <- lapply(no_pp_rename, flowCore::exprs)
         meta_file <- lapply(seq_along(all_exprs), function(i) {
           metadata_vector <- fn_metadata[[i]]
           expr_data <- all_exprs[[i]]
@@ -851,12 +852,15 @@ find_common_columns <- function(df1, df2) {
 
 # Check each fcsObject's column names after applying `processFCS`
 processFCS <- function(fcsObject) {
-  #library(flowWorkspace)
-  library(flowCore)
-  param_names <- pData(parameters(fcsObject))[,"name"]
-  param_desc <- pData(parameters(fcsObject))[,"desc"]
+  param_names <- pData(parameters(fcsObject))[,"name"]  # e.g., "FITC.A"
+  param_desc <- pData(parameters(fcsObject))[,"desc"]   # e.g., "EdU"
+
+  # Use desc where available, fallback to name
   final_colnames <- ifelse(!is.na(param_desc) & param_desc != "", param_desc, param_names)
 
+  # If there are duplicates, append the original param name to make it unique
+  dupes <- duplicated(final_colnames) | duplicated(final_colnames, fromLast = TRUE)
+  final_colnames[dupes] <- paste0(final_colnames[dupes], "_", param_names[dupes])
 
   colnames(fcsObject) <- final_colnames
   return(fcsObject)

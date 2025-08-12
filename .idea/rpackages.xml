@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="RPackageService">
+    <option name="enabledRepositoryUrls">
+      <list>
+        <option value="https://bioconductor.org/packages/3.21/bioc" />
+        <option value="https://bioconductor.org/packages/3.21/data/annotation" />
+        <option value="https://bioconductor.org/packages/3.21/data/experiment" />
+        <option value="@CRAN@" />
+        <option value="https://bioconductor.org/packages/3.21/workflows" />
+        <option value="https://bioconductor.org/packages/3.21/books" />
+      </list>
+    </option>
+  </component>
+</project>

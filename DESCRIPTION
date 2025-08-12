@@ -9,14 +9,16 @@ License: MIT + file LICENSE
 URL: https://github.com/FERWoods/AutoFlow
 BugReports: https://github.com/FERWoods/AutoFlow/issues
 Imports: 
+    biocthis (>= 1.18.0),
     config,
     data.table,
     dplyr,
     DT,
-    flowCore (>= 2.17.1),
+    flowCore (>= 2.19.0),
     flowStats (>= 4.20.0),
     fs,
     golem,
+    markdown,
     mclust,
     PeacoQC (>= 1.18.0),
     plotly,
