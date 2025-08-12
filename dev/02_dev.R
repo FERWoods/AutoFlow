@@ -41,6 +41,7 @@ usethis::use_package("readxl")
 usethis::use_package("stringr")
 usethis::use_package("tidyr")
 usethis::use_package("tools")
+usethis::use_package("markdown")
 
 ## ---- Add Bioconductor Remotes ----
 usethis::use_dev_package("flowCore", type = "Imports", remote = "RGLab/flowCore")
