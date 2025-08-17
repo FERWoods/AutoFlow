@@ -179,10 +179,6 @@ When you upload a bundle in **Supervised** mode:
 - Use the **feature mapping UI** to align any non-matching columns.
 - Confirm the bundle contains `scaling$means` and `scaling$sds` and that feature names in `scaling` match `bundle$features`.
 
-### Lots of “Unknown” labels with the BM-MPS examples
-- Check the **gating CSVs** parse into multiple columns (not a single column). If they appear as one column, re-save with a correct delimiter and encoding (UTF-8 or UTF-16LE/BE).
-- The example scripts contain a robust reader that auto-detects common delimiters and encodings.
-
 ### “Could not find tools necessary to compile a package.”
 - Install Rtools and ensure it’s on your PATH (Windows). See the detailed FAQ below.
 
