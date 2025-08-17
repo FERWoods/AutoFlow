@@ -44,8 +44,11 @@ app_ui <- function(request) {
         ),
         conditionalPanel(
           condition = "input.model_type == 'Supervised'",
-          tags$p("Upload pre-trained model: ensure column names match those after pre-processing (see doc.)"),
-          fileInput("model_file", "Upload Pre-trained Model", accept = c(".RDS", ".rds"))
+          tags$p("Upload pre-trained model bundle (.rds) with: features, scaling$means/sds, model, (optional) levels"),
+          fileInput("model_file", "Upload Pre-trained Model", accept = c(".RDS", ".rds")),
+          uiOutput("supervised_controls"),
+          uiOutput("feature_mapper_ui"),
+          actionButton("runSupervised", "Apply Supervised Model")
         ),
 
         # Show Treatment Plot checkbox, independent of metadata
