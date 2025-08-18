@@ -1,7 +1,6 @@
 #' The application server-side
 #'
 #' @param input,output,session Internal parameters for {shiny}.
-#'     DO NOT REMOVE.
 #' @import shiny
 #' @import Seurat
 #' @import dplyr
@@ -9,40 +8,26 @@
 #' @export
 #' @noRd
 app_server <- function(input, output, session) {
-  #source("R/helper_functions.R")
   volumes <- c(Home = fs::path_home(), "R Installation" = R.home(), shinyFiles::getVolumes()())
-  #shinyFiles::shinyDirChoose(input, "directory", roots = volumes, session = session, restrictions = system.file(package = "base"))
 
-  ## button changes after clicking and selection
-  observe({
-    cat("\ninput$directory value:\n\n")
-    print(input$files)
-  })
-  ## button changes after clicking and selection
+  observe({ print(input$files) })
   shinyFiles::shinyFileChoose(input, "files", roots = volumes, session = session, restrictions = system.file(package = "base"))
-  observe({
-    cat("\ninput$files value:\n\n")
-    print(input$files)
-  })
+  observe({ print(input$files) })
 
   output$files <- renderPrint({
     if (is.integer(input$files)) {
       cat("No directory has been selected")
     } else {
-      tmp = shinyFiles::parseFilePaths(volumes, input$files)
+      tmp <- shinyFiles::parseFilePaths(volumes, input$files)
       cat(paste(nrow(tmp), "files selected"))
     }
   })
-  ## button changes after clicking and selection
+
   shinyFiles::shinyFileChoose(input, "directory_meta", roots = volumes, session = session, restrictions = system.file(package = "base"))
-  observe({
-    cat("\ninput$directory_meta value:\n\n")
-    print(input$directory_meta)
-  })
+  observe({ print(input$directory_meta) })
 
   output$meta_directory <- renderPrint({
-    if (is.integer(input$directory_meta) &
-        is.integer(input$directory)) {
+    if (is.integer(input$directory_meta) & is.integer(input$directory)) {
       cat("Select metadata file and directory of .fcs files")
     } else {
       fileselected <- shinyFiles::parseFilePaths(volumes, input$directory_meta)
@@ -50,47 +35,129 @@ app_server <- function(input, output, session) {
     }
   })
 
+  ## =========================== Robust preprocessing =========================
+  .align_spill_to_ff <- function(ff, spill) {
+    if (is.null(spill)) return(NULL)
+    if (is.list(spill) && !is.null(spill$SPILL)) spill <- spill$SPILL
+    if (!is.matrix(spill)) return(NULL)
+
+    ff_cols <- colnames(ff)
+    sp_cols <- colnames(spill)
+
+    .match_once <- function(sp_name) {
+      cands <- c(
+        sp_name,
+        gsub("-", ".", sp_name, fixed = TRUE),
+        gsub("\\.", "-", sp_name),
+        paste0("Comp-", gsub("\\.", "-", sp_name)),
+        paste0("Comp-", gsub("-", ".", sp_name))
+      )
+      hit <- cands[cands %in% ff_cols]
+      if (length(hit)) hit[1] else NA_character_
+    }
+
+    target <- vapply(sp_cols, .match_once, character(1))
+    ok <- !is.na(target)
+
+    # If poor mapping AND already looks compensated, skip
+    looks_comp <- any(grepl("^Comp-", ff_cols))
+    mapped_ratio <- mean(ok)
+    if (mapped_ratio < 0.6 && looks_comp) {
+      message(sprintf(
+        "Compensation skipped: only %d/%d spill channels matched (%.0f%%) and data appears already compensated.",
+        sum(ok), length(ok), 100 * mapped_ratio
+      ))
+      return(NULL)
+    }
+
+    if (!all(ok)) {
+      message(sprintf(
+        "Compensation with partial mapping: %d/%d spill channels matched (%.0f%%).",
+        sum(ok), length(ok), 100 * mapped_ratio
+      ))
+    }
+
+    sp_use <- spill[ok, ok, drop = FALSE]
+    colnames(sp_use) <- rownames(sp_use) <- target[ok]
+    sp_use
+  }
+
+  safe_preprocess <- function(ff) {
+    cn <- colnames(ff)
+
+    # If looks already compensated (Comp- channels), skip compensation
+    looks_comp <- any(grepl("^Comp-", cn))
+    if (!looks_comp) {
+      spill <- flowCore::keyword(ff)$SPILL
+      if (is.null(spill)) spill <- flowCore::keyword(ff)$`$SPILLOVER`
+      spill_aligned <- .align_spill_to_ff(ff, spill)
+
+      if (is.matrix(spill_aligned) && nrow(spill_aligned) > 0) {
+        ff <- tryCatch(
+          flowCore::compensate(ff, spill_aligned),
+          error = function(e) {
+            message("Compensate failed (using aligned spill): ", conditionMessage(e), " — proceeding without compensation.")
+            ff
+          }
+        )
+      } else {
+        message("No usable SPILL mapping; skipping compensation.")
+      }
+    } else {
+      message("Data appears compensated (Comp-* channels found); skipping compensation.")
+    }
+
+    # Choose fluorescence channels for logicle transform
+    cn <- colnames(ff)
+    trans_cols <- cn[ grepl("-A$", cn) & !grepl("FSC|SSC|Time", cn, ignore.case = TRUE) ]
+    if (length(trans_cols)) {
+      ff <- tryCatch(
+        flowCore::transform(ff, flowCore::estimateLogicle(ff, trans_cols)),
+        error = function(e) {
+          message("Logicle transform failed: ", conditionMessage(e), " — leaving data untransformed.")
+          ff
+        }
+      )
+    } else {
+      message("No fluorescence channels (-A) found for transformation; skipping logicle.")
+    }
+    ff
+  }
+
+  ## ============================== File ingest ===============================
   files_all <- reactive({
     if (!is.integer(input$files) && !is.integer(input$metadata_file)) {
-      # Parse file paths
       files <- shinyFiles::parseFilePaths(volumes, input$files)$datapath
       files <- as.character(files)
 
-      # Read FCS files using flowCore
       all_read <- lapply(files, function(file) {
         tryCatch(
           flowCore::read.FCS(file, alter.names = TRUE, transformation = NULL),
-          error = function(e) {
-            message("Error reading file: ", file)
-            NULL
-          }
+          error = function(e) { message("Error reading file: ", file); NULL }
         )
       })
-      all_read <- Filter(Negate(is.null), all_read)  # Remove NULL entries
+      all_read <- Filter(Negate(is.null), all_read)
 
-      # Extract metadata from FCS files
+      # Simple filename metadata
       fn_metadata <<- lapply(seq_along(all_read), function(i) {
         fcs_obj <- all_read[[i]]
         meta <- as.data.frame(fcs_obj@description)[1, , drop = FALSE]
-
         well <- if ("WELL.ID" %in% colnames(meta) && "FILENAME" %in% colnames(meta)) {
           ifelse(!is.na(meta$WELL.ID), meta$WELL.ID, basename(files[i]))
-        } else {
-          NA
-        }
-
-        # Pair the specific filename with metadata
+        } else { NA }
         paste(basename(files[i]), well, sep = "/")
       })
 
       if (input$preprocess == "Yes") {
-        cat("\nRunning compensation and transformation\n")
+        cat("\nRunning compensation (if needed) and transformation\n")
 
-        # Preprocess data
-        all_ff <- lapply(all_read, preprocess_2)
+        # Robust preprocessing (comp + logicle) BEFORE any renaming
+        all_ff <- lapply(all_read, safe_preprocess)
+
+        # channel subset (unchanged)
         all_ff_a <- lapply(all_ff, channel_select)
 
-        # Remove margin events and perform QC
+        # QC stages
         all_fc_margin <- lapply(all_ff_a, function(fcs_obj) {
           tryCatch(PeacoQC::RemoveMargins(fcs_obj, channels = 1:ncol(fcs_obj)), error = function(e) fcs_obj)
         })
@@ -98,7 +165,7 @@ app_server <- function(input, output, session) {
           tryCatch(PeacoQC::PeacoQC(fcs_obj, report = FALSE, channels = c("Time"), save_fcs = FALSE)$FinalFF, error = function(e) fcs_obj)
         })
 
-        # Remove debris using Gaussian Mixture Model clustering
+        # Debris removal
         all_fc_int <- lapply(all_fc_qc, function(fcs_obj) {
           tryCatch({
             mdl <- mclust::Mclust(fcs_obj@exprs[, "FSC.A"], G = 2)
@@ -107,31 +174,30 @@ app_server <- function(input, output, session) {
           }, error = function(e) fcs_obj)
         })
 
-        # Remove outliers and check cell viability
+        # Single-cell refinement + viability threshold (if present)
         sc_only <- lapply(seq_along(all_fc_int), function(i) {
           fit <- tryCatch(lm(all_fc_int[[i]]@exprs[, "FSC.H"] ~ all_fc_int[[i]]@exprs[, "FSC.A"]), error = function(e) NULL)
           if (!is.null(fit)) {
-            slope <- coef(fit)[2]
-            intercept <- coef(fit)[1]
-            remove_these <- remove_outliers(all_fc_int[[i]]@exprs[, "FSC.H"], all_fc_int[[i]]@exprs[, "FSC.A"], slope=slope, intercept=intercept)
+            slope <- coef(fit)[2]; intercept <- coef(fit)[1]
+            remove_these <- remove_outliers(all_fc_int[[i]]@exprs[, "FSC.H"], all_fc_int[[i]]@exprs[, "FSC.A"], slope = slope, intercept = intercept)
             fcs_obj <- all_fc_int[[i]][-remove_these, ]
             if ("Viability" %in% colnames(fcs_obj@exprs)) {
               fcs_obj <- fcs_obj[fcs_obj@exprs[, "Viability"] < 2, ]
             }
-            return(fcs_obj)
+            fcs_obj
           } else {
-            return(all_fc_int[[i]])
+            all_fc_int[[i]]
           }
         })
 
-        # Standardize column names and combine metadata with expression data
+        # Rename to desc after preprocessing
         sc_only_rename <<- lapply(sc_only, processFCS)
+
+        # Bind expression + filename metadata
         seurat_comb <<- lapply(seq_along(sc_only_rename), function(i) {
           expr_data <- sc_only_rename[[i]]@exprs
           if (nrow(expr_data) > 0) {
             metadata_vector <- fn_metadata[[i]]
-
-            # Transpose the metadata to match nrow with expr_data
             metadata_df <- as.data.frame(t(matrix(metadata_vector, nrow = length(metadata_vector), ncol = nrow(expr_data))))
             colnames(metadata_df) <- paste0("filename", seq_len(ncol(metadata_df)))
             cbind(metadata_df, expr_data)
@@ -141,10 +207,10 @@ app_server <- function(input, output, session) {
         })
         seurat_comb_dat <- do.call(rbind, seurat_comb)
 
-        seurat_meta_comb <<- seurat_comb_dat[, grepl("filename", colnames(seurat_comb_dat)),drop=FALSE]
-        seurat_dat_comb <<- seurat_comb_dat[, !grepl("filename", colnames(seurat_comb_dat)),drop=FALSE]
+        seurat_meta_comb <<- seurat_comb_dat[, grepl("filename", colnames(seurat_comb_dat)), drop = FALSE]
+        seurat_dat_comb  <<- seurat_comb_dat[, !grepl("filename", colnames(seurat_comb_dat)), drop = FALSE]
 
-        # Merge user-provided metadata
+        # Merge user metadata if provided
         if (!is.null(input$metadata_file)) {
           print("User uploaded metadata file - merging!")
           meta_file <- read_file(input$metadata_file$datapath)
@@ -155,20 +221,18 @@ app_server <- function(input, output, session) {
 
         rownames(seurat_dat_comb) <<- rownames(seurat_meta_comb)
         return(seurat_dat_comb)
-      } else if (input$preprocess == "No") {
-        no_pp_rename <<- lapply(all_read, processFCS) #rename using labels from flow cytometry
+
+      } else {  # No preprocessing
+        no_pp_rename <<- lapply(all_read, processFCS)
         all_exprs <- lapply(no_pp_rename, flowCore::exprs)
         meta_file <- lapply(seq_along(all_exprs), function(i) {
           metadata_vector <- fn_metadata[[i]]
           expr_data <- all_exprs[[i]]
-
-          # Transpose the metadata to match nrow with expr_data
           metadata_df <- as.data.frame(t(matrix(metadata_vector, nrow = length(metadata_vector), ncol = nrow(expr_data))))
           colnames(metadata_df) <- paste0("filename", seq_len(ncol(metadata_df)))
           metadata_df
         })
-        seurat_dat_comb <<- as.data.frame(do.call("rbind",
-                                                  all_exprs))
+        seurat_dat_comb <<- as.data.frame(do.call("rbind", all_exprs))
         seurat_meta_comb <<- do.call("rbind", meta_file)
         rownames(seurat_dat_comb) <<- rownames(seurat_meta_comb)
         return(seurat_dat_comb)
@@ -176,8 +240,7 @@ app_server <- function(input, output, session) {
     }
   })
 
-  # Render column selector dynamically based on uploaded data
-  # Hides when Supervised is selected (columns are dictated by the model bundle)
+  ## ======================= Column selector (hide for Supervised) ============
   output$columnSelector <- renderUI({
     req(files_all())
     if (identical(input$model_type, "Supervised")) return(NULL)
@@ -187,39 +250,33 @@ app_server <- function(input, output, session) {
 
   ## ======================== UNSUPERVISED (unchanged) ========================
   cluster_dat <- eventReactive(input$runClustering, {
-    if(!is.integer(input$files) & input$model_type == "Unsupervised") {
+    if (!is.integer(input$files) & input$model_type == "Unsupervised") {
       req(input$columns)
-      # select columns
       seurat_dat_comb <- seurat_dat_comb[, (colnames(seurat_dat_comb) %in% input$columns)]
       seurat_dat_comb <- apply(seurat_dat_comb, 2, norm_minmax)
-      # dimensionality reduction and clustering
-      # convert to seurat first
-      # condition to sample to reduce computation
-      sample_rows <- NULL  # Initialize sample_rows
+
+      # optional downsample
       if (nrow(seurat_dat_comb) > 1e5) {
         sample_rows <- sample(nrow(seurat_dat_comb), 1e5)
-        seurat_dat_comb <- seurat_dat_comb[sample_rows,]
-        seurat_meta_comb <- seurat_meta_comb[sample_rows,]
+        seurat_dat_comb <- seurat_dat_comb[sample_rows, ]
+        seurat_meta_comb <- seurat_meta_comb[sample_rows, ]
       }
-      seurat_meta_comb
-      print(colnames(seurat_meta_comb))
-      seurat_obj <- SeuratObject::CreateSeuratObject(counts=t(seurat_dat_comb), meta.data = seurat_meta_comb)
-      cluster_dat <- run_unsupervised_func(seurat_obj, res=as.numeric(input$res_umap), logfold=as.numeric(input$lf_umap))
+
+      seurat_obj <- SeuratObject::CreateSeuratObject(counts = t(seurat_dat_comb), meta.data = seurat_meta_comb)
+      cluster_dat <- run_unsupervised_func(seurat_obj, res = as.numeric(input$res_umap), logfold = as.numeric(input$lf_umap))
       return(cluster_dat)
     }
   })
 
-  ## ======================== SUPERVISED (new) ================================
-  # State
-  model_bundle <- reactiveVal(NULL)       # list with $model or $caret_fit, $features, $scaling, optional $levels
-  model_features <- reactiveVal(NULL)     # character vector (order matters)
-  scaling_means <- reactiveVal(NULL)      # named numeric
-  scaling_sds   <- reactiveVal(NULL)      # named numeric
-  class_levels  <- reactiveVal(NULL)      # optional levels in bundle
-  feature_map   <- reactiveVal(NULL)      # named char: names=model features, values=uploaded data cols
-  supervised_obj <- reactiveVal(NULL)     # Seurat object built for supervised predictions
+  ## ======================== SUPERVISED ======================================
+  model_bundle   <- reactiveVal(NULL)
+  model_features <- reactiveVal(NULL)
+  scaling_means  <- reactiveVal(NULL)
+  scaling_sds    <- reactiveVal(NULL)
+  class_levels   <- reactiveVal(NULL)
+  feature_map    <- reactiveVal(NULL)
+  supervised_obj <- reactiveVal(NULL)
 
-  # helpers
   scale_with_bundle <- function(df_mat, means, sds) {
     stopifnot(all(names(means) %in% colnames(df_mat)), all(names(sds) %in% colnames(df_mat)))
     X <- as.matrix(df_mat[, names(means), drop = FALSE])
@@ -246,12 +303,9 @@ app_server <- function(input, output, session) {
     out
   }
 
-  # status box for supervised
   output$supervised_controls <- renderUI({
     req(input$model_type == "Supervised")
-    if (is.null(input$model_file)) {
-      return(helpText("Awaiting model bundle upload..."))
-    }
+    if (is.null(input$model_file)) return(helpText("Awaiting model bundle upload..."))
     req(model_bundle())
     b <- model_bundle()
     tags$div(
@@ -261,7 +315,6 @@ app_server <- function(input, output, session) {
     )
   })
 
-  # load bundle
   observeEvent(input$model_file, {
     req(input$model_type == "Supervised", input$model_file$datapath)
     b <- tryCatch(readRDS(input$model_file$datapath), error = function(e) NULL)
@@ -288,7 +341,6 @@ app_server <- function(input, output, session) {
     }
   })
 
-  # feature mapping UI (hidden if all features auto-matched exactly)
   output$feature_mapper_ui <- renderUI({
     req(input$model_type == "Supervised", model_features())
     req(exists("seurat_dat_comb", inherits = TRUE) && is.data.frame(seurat_dat_comb))
@@ -297,12 +349,10 @@ app_server <- function(input, output, session) {
     current_map <- feature_map()
     choices <- colnames(seurat_dat_comb)
 
-    # Hide mapping UI if everything matched exactly
+    # Hide UI if perfectly matched (1:1 and identical order)
     if (!is.null(current_map) &&
         all(!is.na(current_map)) &&
         all(nzchar(current_map)) &&
-        all(names(current_map) %in% feats) &&
-        all(current_map %in% choices) &&
         all(names(current_map) == feats) &&
         all(current_map == feats)) {
       return(tags$p(HTML("<b>All model features were matched automatically.</b>")))
@@ -364,7 +414,6 @@ app_server <- function(input, output, session) {
     )
   })
 
-  # run supervised prediction
   observeEvent(input$runSupervised, {
     req(input$model_type == "Supervised")
     req(model_bundle(), model_features(), scaling_means(), scaling_sds())
@@ -373,13 +422,11 @@ app_server <- function(input, output, session) {
     feats <- model_features()
     fm <- feature_map()
 
-    # If no mapping provided yet, attempt auto-map again (for exact-name cases)
     if (is.null(fm) || any(is.na(fm) | !nzchar(fm))) {
       feature_map(auto_map_features(feats, colnames(seurat_dat_comb)))
       fm <- feature_map()
     }
 
-    # ensure all mapped
     missing <- names(fm)[is.na(fm) | !nzchar(fm)]
     validate(need(!length(missing), paste("Please map all features before running. Missing:", paste(missing, collapse = ", "))))
 
@@ -395,7 +442,6 @@ app_server <- function(input, output, session) {
 
     if (!is.null(b$model)) {
       if (inherits(b$model, "ranger")) {
-        # explicit namespaced call avoids S3 dispatch issues
         pr <- predict(b$model, data = as.data.frame(Xs))
         if (!is.null(pr$predictions) && is.matrix(pr$predictions)) {
           probs <- pr$predictions
@@ -429,7 +475,7 @@ app_server <- function(input, output, session) {
       yhat <- factor(as.character(yhat), levels = class_levels())
     }
 
-    # Attach predictions to your wide data (for possible exports)
+    # Attach predictions back to the wide table used for Seurat meta
     seurat_dat_comb$predicted_class <- as.character(yhat)
     if (!is.null(probs)) {
       for (cc in colnames(probs)) {
@@ -437,8 +483,7 @@ app_server <- function(input, output, session) {
       }
     }
 
-    # ----- Build a Seurat object for downstream outputs (counts per file) -----
-    # Use model features as "genes" to keep a tidy matrix
+    # Build a minimal Seurat object (no UMAP) just to carry metadata and support downstream code
     counts_mat <- t(as.matrix(seurat_dat_comb[, feats, drop = FALSE]))
     stopifnot(ncol(counts_mat) == nrow(seurat_meta_comb))
     colnames(counts_mat) <- rownames(seurat_meta_comb)
@@ -447,228 +492,143 @@ app_server <- function(input, output, session) {
       counts = counts_mat,
       meta.data = seurat_meta_comb
     )
-    # Add predicted classes as the "assignment" used by your downstream table
     seur_sup@meta.data$assignment <- seurat_dat_comb$predicted_class
-
-    # Make it available to downstream outputs
     supervised_obj(seur_sup)
 
     showNotification("Supervised predictions added to dataset.", type = "message")
   })
 
-  ## ======================== downstream (now handles both) ===================
-  # If Supervised -> use supervised_obj(); else -> use clustering result
+  ## ======================== Downstream consumers ============================
   out_dat_reactive <- reactive({
     if (identical(input$model_type, "Supervised")) {
-      req(supervised_obj())
-      supervised_obj()
+      req(supervised_obj()); supervised_obj()
     } else {
       cluster_dat()
     }
   })
 
-  # Observe changes in out_dat_reactive
-  observe({
-    out_dat <- out_dat_reactive()
-    #print(out_dat)
-  })
+  observe({ out_dat <- out_dat_reactive() })
 
   output$plotdata <- plotly::renderPlotly({
-    req(out_dat_reactive)  # Ensure out_dat is not NULL before proceeding
-    out_dat <- out_dat_reactive()  # Retrieve the value
-    # For supervised, we may not have UMAP; guard accordingly
+    req(out_dat_reactive)
+    out_dat <- out_dat_reactive()
     if ("umap" %in% names(out_dat@reductions)) {
       umap_data <- out_dat[["umap"]]@cell.embeddings
-      print(head(umap_data))
-      rownames(out_dat@meta.data) <- rownames(out_dat[["umap"]]@cell.embeddings)
-      seurat_to_df <<- Seurat::FetchData(object = out_dat, vars = c("umap_1", "umap_2", "umap_3", colnames(out_dat@meta.data)))
+      rownames(out_dat@meta.data) <- rownames(umap_data)
+      seurat_to_df <<- Seurat::FetchData(out_dat, vars = c("umap_1", "umap_2", "umap_3", colnames(out_dat@meta.data)))
       plotly::plot_ly(
         data = seurat_to_df,
         x = ~umap_1, y = ~umap_2, z = ~umap_3,
         color = ~assignment,
         type = "scatter3d",
         mode = "markers",
-        marker = list(size = 2, width=2),
-        hoverinfo="text",
-        size = 10, alpha = I(1), text =~assignment, showlegend = FALSE
+        marker = list(size = 2, width = 2),
+        hoverinfo = "text",
+        size = 10, alpha = I(1), text = ~assignment, showlegend = FALSE
       )
     } else {
-      # Supervised path: no UMAP — just return an empty plot with counts by class
       md <- out_dat@meta.data
-      agg <- md %>% count(assignment, name = "count")
+      agg <- md %>% dplyr::count(assignment, name = "count")
       plotly::plot_ly(data = agg, x = ~assignment, y = ~count, type = "bar")
     }
   })
 
+  ## ======================== Counts table (fixed) ============================
   output$tablecounts <- DT::renderDataTable({
-    req(out_dat_reactive)  # Ensure out_dat is not NULL before proceeding
-    out_dat <- out_dat_reactive()  # Retrieve the value
-    if(!is.null(out_dat)){
-      print(out_dat@meta.data)
-      library(dplyr)
-      seurat_metadata <<- out_dat@meta.data
+    req(out_dat_reactive)
+    out_dat <- out_dat_reactive()
+    if (!is.null(out_dat)) {
+      seurat_metadata <- out_dat@meta.data
 
-      # Dynamically get all column names with the prefix "filename"
+      # Build per-sample key from all filename* columns
       filename_cols <- grep("^filename", colnames(seurat_metadata), value = TRUE)
-
-      # Concatenate all filename columns to create a unique full file path column
-      seurat_metadata <- seurat_metadata %>%
-        mutate(Sample = apply(select(., all_of(filename_cols)), 1, paste, collapse = "/"))
-
-      # Summarize counts and merge back with the original metadata
-      if ("proliferation" %in% colnames(seurat_metadata)) {
-        # Summarize counts
-        summary_counts <- seurat_metadata %>%
-          group_by(Sample, assignment, proliferation) %>%
-          summarise(count = n(), .groups = "drop") %>%
-          setNames(c("Sample", "assignment", "proliferation", "count"))
-
-        # Merge with original metadata
-        summary_tab <<- seurat_metadata %>%
-          left_join(summary_counts, by = c("Sample", "assignment", "proliferation"), keep = FALSE) %>%
-          select(-nCount_RNA)
-      } else {
-        # Summarize counts
-        summary_counts <- seurat_metadata %>%
-          group_by(Sample, assignment) %>%
-          summarise(count = n(), .groups = "drop") %>%
-          setNames(c("Sample", "assignment", "count"))
-
-        # Merge with original metadata
-        summary_tab <<- seurat_metadata %>%
-          left_join(summary_counts, by = c("Sample", "assignment"), keep = FALSE) %>%
-          select(-nCount_RNA) %>%
-          distinct()
+      if (!length(filename_cols)) {
+        # Fallback: create a single file tag if none present
+        seurat_metadata$filename1 <- "sample"
+        filename_cols <- "filename1"
       }
+
+      # A single "Sample" label per event
+      seurat_metadata <- seurat_metadata %>%
+        mutate(Sample = apply(dplyr::select(., dplyr::all_of(filename_cols)), 1, paste, collapse = "/"))
+
+      # Pure aggregated table (no left_join back to per-event rows!)
+      summary_tab <- seurat_metadata %>%
+        group_by(Sample, assignment) %>%
+        summarise(count = dplyr::n(), .groups = "drop") %>%
+        arrange(Sample, desc(count))
+
+      # expose globally for download handlers
+      assign("summary_tab", summary_tab, envir = .GlobalEnv)
 
       summary_tab
     }
   })
 
+  ## ============================== Downloads =================================
+  output$downloadcounts <- downloadHandler(
+    filename = function() paste(Sys.Date(), "AutoFlow_counts.csv", sep = "_"),
+    content = function(fname) {
+      req(exists("summary_tab", envir = .GlobalEnv))
+      write.csv(get("summary_tab", envir = .GlobalEnv), fname, row.names = FALSE)
+    }
+  )
 
-  # Downloadable zip of processed FCS files
-  output$downloadcounts <- downloadHandler(
-    filename = function() {
-      paste(Sys.Date(), "processed_fcs.zip", sep = "_")
-    },
-    content = function(fname) {
-      req(summary_tab)
-      write.csv(data.table(summary_tab), fname, row.names = FALSE)
-    }
-  )
-  # Downloadable csv of count data per file
-  output$downloadcounts <- downloadHandler(
-    filename = function() {
-      paste(Sys.Date(), "AutoFlow_counts.csv", sep = "_")
-    },
-    content = function(fname) {
-      req(summary_tab)
-      write.csv(data.table(summary_tab), fname, row.names = FALSE)
-    }
-  )
   output$downloadcountsdelta <- downloadHandler(
-    filename = function() {
-      paste(Sys.Date(), "DeltaFlow_counts.csv", sep = "_")
-    },
+    filename = function() paste(Sys.Date(), "DeltaFlow_counts.csv", sep = "_"),
     content = function(fname) {
-      req(out_dat_reactive)  # Ensure out_dat is not NULL before proceeding
-      req(summary_tab)
+      req(exists("summary_tab", envir = .GlobalEnv))
       library(tidyr)
-      out_dat <- out_dat_reactive()  # Retrieve the value
-
-      if (!is.null(out_dat)) {
-        #print(out_dat@meta.data)
-        seurat_metadata <- out_dat@meta.data
-        summary_tab_prep <- summary_tab %>%
-          mutate(assignment = paste0(assignment, " Count")) %>%
-          mutate(count = as.numeric(count),
-                 assignment = as.character(assignment))
-        #print(summary_tab_prep)
-        seurat_metadata_wide <- summary_tab_prep %>%
-          pivot_wider(names_from = assignment,
-                      values_from = count,
-                      values_fill = list(count = 0))
-        # Write the wide-format data to a CSV file
-        write.csv(seurat_metadata_wide, fname, row.names = FALSE)
-      }
+      summary_tab <- get("summary_tab", envir = .GlobalEnv)
+      seurat_metadata_wide <- summary_tab %>%
+        mutate(assignment = paste0(assignment, " Count")) %>%
+        tidyr::pivot_wider(names_from = assignment, values_from = count, values_fill = list(count = 0))
+      write.csv(seurat_metadata_wide, fname, row.names = FALSE)
     }
   )
-  # Downloadable seurat object as RDS object
+
   output$downloadseurat <- downloadHandler(
-    filename = function() {
-      paste(Sys.Date(), "AutoFlow_seurat_obj.rds", sep = "_")
-    },
+    filename = function() paste(Sys.Date(), "AutoFlow_seurat_obj.rds", sep = "_"),
     content = function(fname) {
       req(out_dat_reactive)
-      out_dat <- out_dat_reactive()  # Retrieve the value
+      out_dat <- out_dat_reactive()
       saveRDS(out_dat, fname)
     }
   )
-  # Dynamically create dropdowns for user-selected columns
+
+  ## ===================== Plot selectors (unchanged) =========================
   output$select_color_column <- renderUI({
-    req(out_dat_reactive)  # Ensure out_dat is not NULL before proceeding
-    out_dat <- out_dat_reactive()  # Retrieve the value
-    selectInput(
-      "color_column",
-      "Select Treatment for Coloring:",
-      choices = colnames(out_dat@meta.data),
-      selected = colnames(out_dat@meta.data)[1]  # Default to the first column
-    )
+    req(out_dat_reactive)
+    out_dat <- out_dat_reactive()
+    selectInput("color_column", "Select Treatment for Coloring:",
+                choices = colnames(out_dat@meta.data),
+                selected = colnames(out_dat@meta.data)[1])
   })
 
   output$select_x_column <- renderUI({
-    req(out_dat_reactive)  # Ensure out_dat is not NULL before proceeding
-    out_dat <- out_dat_reactive()  # Retrieve the value
-    selectInput(
-      "x_column",
-      "Select Timepoint Column (X-axis):",
-      choices = colnames(out_dat@meta.data),
-      selected = colnames(out_dat@meta.data)[2]  # Default to the second column
-    )
+    req(out_dat_reactive)
+    out_dat <- out_dat_reactive()
+    selectInput("x_column", "Select Timepoint Column (X-axis):",
+                choices = colnames(out_dat@meta.data),
+                selected = colnames(out_dat@meta.data)[2])
   })
 
   output$select_cells <- renderUI({
-    req(out_dat_reactive)  # Ensure out_dat is not NULL before proceeding
-    out_dat <- out_dat_reactive()  # Retrieve the value
-    selectInput(
-      "cell_assignment",
-      "Select cell assignment for plot",
-      choices = unique(out_dat@meta.data$assignment),
-      selected = unique(out_dat@meta.data$assignment)[2]  # Default to the second
-    )
+    req(out_dat_reactive)
+    out_dat <- out_dat_reactive()
+    selectInput("cell_assignment", "Select cell assignment for plot",
+                choices = unique(out_dat@meta.data$assignment),
+                selected = unique(out_dat@meta.data$assignment)[min(2, length(unique(out_dat@meta.data$assignment)))])
   })
 
   observe({
     req(out_dat_reactive())
-    updateSelectInput(
-      session, "color_column",
-      choices = colnames(out_dat_reactive()@meta.data)
-    )
-    updateSelectInput(
-      session, "x_column",
-      choices = colnames(out_dat_reactive()@meta.data)
-    )
-    updateSelectInput(
-      session, "cell_assignment",
-      choices = unique(out_dat_reactive()@meta.data$assignment)
-    )
-  })
-  observe({
-    if (!is.null(out_dat_reactive())) {
-      #print("Debug: out_dat_reactive is valid")
-      # Only print inputs if out_dat_reactive is ready
-      #print(paste("Debug: input$color_column =", input$color_column))
-      #print(paste("Debug: input$x_column =", input$x_column))
-      #print(paste("Debug: input$cell_assignment =", input$cell_assignment))
-    } else {
-      #print("Debug: Skipping observe logic because out_dat_reactive is NULL")
-    }
+    updateSelectInput(session, "color_column", choices = colnames(out_dat_reactive()@meta.data))
+    updateSelectInput(session, "x_column", choices = colnames(out_dat_reactive()@meta.data))
+    updateSelectInput(session, "cell_assignment", choices = unique(out_dat_reactive()@meta.data$assignment))
   })
 
-  # Treatment plot tab visibility logic (unchanged)
   observeEvent(input$show_treatment_plot, {
-    print(paste0("checking treatment plot logic, isTruthy(input$show_treatment_plot):", isTruthy(input$show_treatment_plot),
-                 " isTruthy(input$metadata_file):", isTruthy(input$metadata_file)))
     if (isTruthy(input$metadata_file) && isTruthy(input$show_treatment_plot)) {
       showTab(inputId = "tabs", target = "Treatment Plot")
     } else {
@@ -678,14 +638,12 @@ app_server <- function(input, output, session) {
 
   output$plottreatment <- plotly::renderPlotly({
     req(out_dat_reactive())
-    print("Debug: Entered output$plottreatment")
-    # Simple placeholder plot; your real plot code can go here
-    plot_ly(mtcars, x = ~wt, y = ~mpg, type = "scatter", mode = "markers")
+    plotly::plot_ly(mtcars, x = ~wt, y = ~mpg, type = "scatter", mode = "markers")
   })
 }
 
 
-# functions
+# helper functions
 
 # pre-process functions
 preprocess_2 <- function(ff){
