@@ -3,19 +3,21 @@ Title: Autogating for flow cytometry data
 Version: 3.0.0
 Authors@R: 
     person("Freya", "Woods", , "freyawoods94@gmail.com", role = c("aut", "cre"))
-Description: An autogating application for flow cytometry data containing
-    a supervised machine learning workflow and an unsupervised working.
+Description: An autogating application for flow cytometry data containing a supervised machine learning workflow and an unsupervised working.
 License: MIT + file LICENSE
 URL: https://github.com/FERWoods/AutoFlow
 BugReports: https://github.com/FERWoods/AutoFlow/issues
 Imports: 
+    Biobase,
     biocthis (>= 1.18.0),
     config,
     data.table,
     dplyr,
     DT,
+    e1071,
     flowCore (>= 2.19.0),
-    flowStats (>= 4.20.0),
+    flowStats (>= 4.19.0),
+    flowWorkspace (>= 4.19.1),
     fs,
     ggplot2,
     golem,
@@ -24,6 +26,7 @@ Imports:
     PeacoQC (>= 1.18.0),
     plotly,
     randomForest,
+    ranger,
     readr,
     readxl,
     Seurat,
@@ -33,9 +36,12 @@ Imports:
     shinyFiles,
     shinyjs,
     shinythemes,
+    stats,
     stringr,
     tidyr,
-    tools
+    tools,
+    utils,
+    zip
 Suggests: 
     caret,
     flowUtils,
@@ -47,11 +53,14 @@ Suggests:
     spelling,
     testthat (>= 3.0.0),
     viridis
-Remotes: 
-    RGLab/flowCore,
+VignetteBuilder: 
+    knitr
+Remotes:  
+    bioc::flowCore,
     bioc::PeacoQC,
     bioc::flowStats,
-    bioc::biocthis
+    bioc::biocthis,
+    bioc::flowWorkspace
 Config/testthat/edition: 3
 Encoding: UTF-8
 Language: en-US
