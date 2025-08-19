@@ -68,7 +68,7 @@ app_server <- function(input, output, session) {
 
   # QC helpers
   run_qc_remove_margins <- function(ff) {
-    tryCatch(PeacoQC::RemoveMargins(ff, channels = 1:ncol(ff)), error = function(e) ff)
+    tryCatch(PeacoQC::RemoveMargins(ff, channels = 1:ncol(ff), save_fcs=FALSE, report=FALSE), error = function(e) ff)
   }
   run_qc_peacoqc <- function(ff) {
     out <- tryCatch(
