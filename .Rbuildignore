@@ -13,3 +13,10 @@ $run_dev.*
 ^app\.R$
 ^rsconnect$
 ^\.rscignore$
+^doc$
+^Meta$
+^codecov\.yml$
+^\.github$
+^Makefile$
+^Jenkinsfile$
+^\.gitlab-ci\.yml$

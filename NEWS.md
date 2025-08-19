@@ -1,3 +1,3 @@
-# autoflow 2.0.0
+# autoflow 3.0.0
 
 * Initial CRAN submission.

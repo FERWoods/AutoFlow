@@ -45,11 +45,11 @@ usethis::use_package("markdown")
 usethis::use_package("ranger")
 
 ## ---- Add Bioconductor Remotes ----
-usethis::use_dev_package("flowCore", type = "Imports", remote = "RGLab/flowCore")
+usethis::use_dev_package("flowCore", type = "Imports", remote = "bioc::flowCore")
 usethis::use_dev_package("PeacoQC", type = "Imports", remote = "bioc::PeacoQC")
 usethis::use_dev_package("flowStats", type = "Imports", remote = "bioc::flowStats")
 usethis::use_dev_package("biocthis", type = "Imports", remote = "bioc::biocthis")
-#usethis::use_dev_package("flowWorkspace", type = "Imports", remote = "bioc::flowWorkspace")
+usethis::use_dev_package("flowWorkspace", type = "Imports", remote = "bioc::flowWorkspace")
 
 
 ## Add modules ----
