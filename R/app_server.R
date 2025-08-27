@@ -250,6 +250,56 @@ app_server <- function(input, output, session) {
     X
   }
 
+  # ── Auto-map model features to dataset columns ─────────────────────────────
+  # Returns a named character vector: names = model features, values = matched
+  # dataset column names (or NA if no match).
+  auto_map_features <- function(model_feats, dataset_cols) {
+    stopifnot(is.character(model_feats), is.character(dataset_cols))
+    if (!length(model_feats) || !length(dataset_cols)) {
+      return(setNames(rep(NA_character_, length(model_feats)), model_feats))
+    }
+
+    canon <- function(x) tolower(gsub("[^a-z0-9]+", "", x))
+
+    out <- setNames(rep(NA_character_, length(model_feats)), model_feats)
+
+    ds_raw   <- dataset_cols
+    ds_low   <- tolower(dataset_cols)
+    ds_mn    <- make.names(dataset_cols)
+    ds_canon <- canon(dataset_cols)
+
+    mf_raw   <- model_feats
+    mf_low   <- tolower(model_feats)
+    mf_mn    <- make.names(model_feats)
+    mf_canon <- canon(model_feats)
+
+    # case-insensitive exact match on raw names
+    for (i in seq_along(mf_raw)) {
+      hit <- which(ds_low == mf_low[i])
+      if (length(hit)) { out[i] <- ds_raw[hit[1]]; next }
+    }
+
+    # exact match after make.names on both sides
+    for (i in seq_along(mf_raw)) if (is.na(out[i])) {
+      hit <- which(ds_mn == mf_mn[i])
+      if (length(hit)) { out[i] <- ds_raw[hit[1]]; next }
+    }
+
+    # exact match on canonicalised strings (strip punctuation/case)
+    for (i in seq_along(mf_raw)) if (is.na(out[i])) {
+      hit <- which(ds_canon == mf_canon[i])
+      if (length(hit)) { out[i] <- ds_raw[hit[1]]; next }
+    }
+
+    # soft match: canonical startsWith in either direction (take first hit)
+    for (i in seq_along(mf_raw)) if (is.na(out[i])) {
+      hit <- which(startsWith(ds_canon, mf_canon[i]) | startsWith(mf_canon[i], ds_canon))
+      if (length(hit)) out[i] <- ds_raw[hit[1]]
+    }
+
+    out
+  }
+
   ## ───────────────────────────── Reactive state ──────────────────────────────
   volumes <- c(Home = fs::path_home(), shinyFiles::getVolumes()())
   shinyFiles::shinyFileChoose(input, "files", roots = volumes, session = session)
@@ -310,48 +360,12 @@ app_server <- function(input, output, session) {
     TRUE
   })
 
-  ## ───────────────────────────── Preprocess toggle ───────────────────────────
+  ## ───────────────────────────── Preprocess toggle (robust) ───────────────────
   observeEvent(list(raw_ff(), input$preprocess), {
     req(raw_ff())
-    if (identical(input$preprocess, "Yes")) {
-      # margins → debris removal → comp/logicle → PeacoQC
-      Rm <- lapply(raw_ff(), run_qc_remove_margins)
 
-      n_before   <- vapply(Rm, function(ff) nrow(ff@exprs), numeric(1))
-      deb_counts <- vapply(Rm, function(ff) sum(detect_debris_flags(ff) == 1L, na.rm = TRUE), numeric(1))
-
-      Rd <- lapply(Rm, remove_debris_if_any)
-      P0 <- lapply(Rd, preprocess_robust)
-      P  <- lapply(P0, run_qc_peacoqc)
-      proc_ff(P)
-
-      if (sum(deb_counts) > 0) {
-        pct <- 100 * sum(deb_counts) / sum(n_before)
-        for (i in seq_along(Rm)) {
-          if (deb_counts[i] > 0) {
-            showNotification(sprintf("File %02d: removed %s debris events (%.2f%%).",
-                                     i, format(deb_counts[i]), 100*deb_counts[i]/n_before[i]),
-                             type = "message", duration = 5)
-          }
-        }
-        showNotification(sprintf("Total debris removed: %s (%.2f%%).",
-                                 format(sum(deb_counts)), pct),
-                         type = "message", duration = 6)
-      }
-
-      # maps & default viability
-      maps <- build_name_label_maps(P)
-      name_to_label(maps$name_to_label)
-      label_to_name(maps$label_to_name)
-
-      ntl <- maps$name_to_label
-      vi_idx <- grep("viab|live|livedead|7aad|amine|dapi|v525", canon(unname(ntl)))
-      default_viab_name(if (length(vi_idx)) names(ntl)[vi_idx[1]] else names(ntl)[1])
-
-      vv <- get_marker_vector(P, default_viab_name())
-      auto_viab_thr_val(if (length(vv)) auto_threshold_gmm(vv) else 0)
-
-    } else {
+    if (!identical(input$preprocess, "Yes")) {
+      # No preprocessing: just (re)build label maps from raw
       proc_ff(NULL)
       maps <- build_name_label_maps(raw_ff())
       name_to_label(maps$name_to_label)
@@ -362,7 +376,81 @@ app_server <- function(input, output, session) {
       default_viab_name(if (length(vi_idx)) names(ntl)[vi_idx[1]] else names(ntl)[1])
 
       auto_viab_thr_val(NULL)
+      return(invisible())
     }
+
+    R <- raw_ff()
+    if (!length(R)) return(invisible())
+
+    # Safe wrappers that never throw
+    safe_RemoveMargins <- function(ff) {
+      tryCatch(run_qc_remove_margins(ff), error = function(e) ff)
+    }
+    safe_remove_debris <- function(ff) {
+      tryCatch(remove_debris_if_any(ff), error = function(e) ff)
+    }
+    safe_preprocess    <- function(ff) {
+      tryCatch(preprocess_robust(ff), error = function(e) ff)
+    }
+    safe_PeacoQC       <- function(ff) {
+      tryCatch({
+        out <- run_qc_peacoqc(ff)
+        if (is.null(out)) ff else out
+      }, error = function(e) ff)
+    }
+
+    # Apply stepwise per file; track debris counts but don’t fail
+    n_before   <- vapply(R, function(ff) nrow(ff@exprs), numeric(1))
+    deb_counts <- numeric(length(R))
+
+    P <- lapply(seq_along(R), function(i){
+      ff0 <- R[[i]]
+      ff1 <- safe_RemoveMargins(ff0)
+      # debris detection (safe)
+      dc  <- tryCatch(sum(detect_debris_flags(ff1) == 1L, na.rm = TRUE), error = function(e) 0)
+      deb_counts[i] <<- dc
+      ff2 <- safe_remove_debris(ff1)
+      ff3 <- safe_preprocess(ff2)
+      ff4 <- safe_PeacoQC(ff3)
+      ff4
+    })
+
+    # If something catastrophic produced zero-length or invalid frames, fallback to raw
+    ok_lengths <- vapply(P, function(ff) inherits(ff, "flowFrame") && nrow(ff@exprs) > 0, logical(1))
+    if (!length(P) || !all(ok_lengths)) {
+      proc_ff(NULL)  # ensure downstream uses raw
+      showNotification("Pre-processing failed or produced empty output — proceeding with RAW data.", type = "warning", duration = 6)
+    } else {
+      proc_ff(P)
+
+      if (sum(deb_counts) > 0) {
+        pct <- 100 * sum(deb_counts) / sum(n_before)
+        for (i in seq_along(R)) {
+          if (deb_counts[i] > 0) {
+            showNotification(sprintf("File %02d: removed %s debris events (%.2f%%).",
+                                     i, format(deb_counts[i]), 100*deb_counts[i]/n_before[i]),
+                             type = "message", duration = 4)
+          }
+        }
+        showNotification(sprintf("Total debris removed: %s (%.2f%%).",
+                                 format(sum(deb_counts)), pct),
+                         type = "message", duration = 5)
+      }
+    }
+
+    # Build maps & default viability from whatever we ended up with (processed OR raw)
+    FF_use <- proc_ff() %||% raw_ff()
+    maps <- build_name_label_maps(FF_use)
+    name_to_label(maps$name_to_label)
+    label_to_name(maps$label_to_name)
+
+    ntl <- maps$name_to_label
+    vi_idx <- grep("viab|live|livedead|7aad|amine|dapi|v525", canon(unname(ntl)))
+    default_viab_name(if (length(vi_idx)) names(ntl)[vi_idx[1]] else names(ntl)[1])
+
+    # Auto-threshold viability from the chosen set
+    vv <- get_marker_vector(FF_use, default_viab_name())
+    auto_viab_thr_val(if (length(vv)) auto_threshold_gmm(vv) else 0.5)
   }, ignoreInit = TRUE)
 
   ## ───────────────── Rebuild combined matrix ────────────────────────────────
@@ -450,17 +538,16 @@ app_server <- function(input, output, session) {
                        choices = choices, selected = names(choices))
   })
 
-  ## ───────────────────── Viability controls ─────────────────────────────────
+  ## ───────────────────── Viability controls (robust to preproc status) ─────────────────────
   output$viability_controls <- renderUI({
     req(files_all())
-    if (!identical(input$preprocess, "Yes")) return(NULL)
     ntl <- name_to_label(); req(ntl)
 
+    # choose a sensible starting threshold from whatever data we have
+    FF_use <- use_ff(); req(FF_use)
     start_thr <- {
-      if (!is.null(proc_ff())) {
-        vv0 <- get_marker_vector(proc_ff(), default_viab_name() %||% names(ntl)[1])
-        if (length(vv0)) auto_threshold_gmm(vv0) else 0.5
-      } else auto_viab_thr_val() %||% 0.5
+      vv0 <- get_marker_vector(FF_use, default_viab_name() %||% names(ntl)[1])
+      if (length(vv0)) auto_threshold_gmm(vv0) else 0.5
     }
 
     tagList(
@@ -489,20 +576,20 @@ app_server <- function(input, output, session) {
                       choices  = setNames(names(name_to_label()), name_to_label()))
   }, ignoreInit = TRUE)
 
-  observeEvent(list(input$viability_marker_name, proc_ff()), {
-    req(proc_ff(), input$viability_marker_name)
-    vv <- get_marker_vector(proc_ff(), input$viability_marker_name)
+  observeEvent(list(input$viability_marker_name, use_ff()), {
+    req(use_ff(), input$viability_marker_name)
+    vv <- get_marker_vector(use_ff(), input$viability_marker_name)
     if (!length(vv)) return()
     rng <- stats::quantile(vv[is.finite(vv)], c(0.001, 0.999), na.rm = TRUE)
     thr <- auto_viab_thr_val() %||% auto_threshold_gmm(vv)
     updateSliderInput(session, "viability_threshold",
                       min = round(rng[1], 3), max = round(rng[2], 3),
                       value = round(thr, 3))
-  })
+  }, ignoreInit = TRUE)
 
   observeEvent(input$recalc_auto_thr, {
-    req(proc_ff(), input$viability_marker_name)
-    vv  <- get_marker_vector(proc_ff(), input$viability_marker_name)
+    req(use_ff(), input$viability_marker_name)
+    vv  <- get_marker_vector(use_ff(), input$viability_marker_name)
     if (!length(vv)) return()
     thr <- auto_threshold_gmm(vv)
     auto_viab_thr_val(thr)
@@ -511,8 +598,8 @@ app_server <- function(input, output, session) {
   })
 
   output$viability_summary <- renderText({
-    req(proc_ff(), input$viability_marker_name, !is.null(input$viability_threshold))
-    vv <- get_marker_vector(proc_ff(), input$viability_marker_name)
+    req(use_ff(), input$viability_marker_name, !is.null(input$viability_threshold))
+    vv <- get_marker_vector(use_ff(), input$viability_marker_name)
     vv <- vv[is.finite(vv)]
     if (!length(vv)) return("No values available for this marker.")
     thr <- as.numeric(input$viability_threshold)
@@ -601,11 +688,10 @@ app_server <- function(input, output, session) {
   ## ───────────────────────────── Marker QC plots ────────────────────────────
   output$marker_qc <- plotly::renderPlotly({
     req(files_all())
-    validate(need(identical(input$preprocess, "Yes"),
-                  "Enable pre-processing to view viability densities."))
-    req(input$viability_marker_name, input$viability_threshold, proc_ff())
+    validate(need(!is.null(use_ff()), "Load data to view viability densities."))
+    req(input$viability_marker_name, input$viability_threshold, use_ff())
 
-    vv <- get_marker_vector(proc_ff(), input$viability_marker_name)
+    vv <- get_marker_vector(use_ff(), input$viability_marker_name)
     vv <- vv[is.finite(vv)]
     validate(need(length(vv) >= 2, "Not enough values to draw a density."))
 
@@ -703,7 +789,7 @@ app_server <- function(input, output, session) {
   })
 
 
-  ## ───────────────────────────── Supervised (unchanged) ─────────────────────
+  ## ───────────────────────────── Supervised (unchanged API) ─────────────────
   output$supervised_controls <- renderUI({
     req(input$model_type == "Supervised")
     if (is.null(input$model_file)) return(helpText("Awaiting model bundle upload…"))
@@ -917,34 +1003,35 @@ app_server <- function(input, output, session) {
   output$tablecounts <- DT::renderDataTable({
     req(out_dat_reactive())
     out_dat <- out_dat_reactive()
-    seurat_metadata <- out_dat@meta.data
 
+    # Start from meta only; drop Seurat bookkeeping cols
+    seurat_metadata <- out_dat@meta.data %>%
+      dplyr::select(-dplyr::matches("^n(Count|Feature)_"))
+
+    # Build a single "Sample" column from filename* (if present)
     filename_cols <- grep("^filename", colnames(seurat_metadata), value = TRUE)
     seurat_metadata <- seurat_metadata %>%
-      dplyr::mutate(Sample = if (length(filename_cols))
-        apply(dplyr::select(., dplyr::all_of(filename_cols)), 1, paste, collapse = "/")
-        else rownames(seurat_metadata))
+      dplyr::mutate(
+        Sample = if (length(filename_cols))
+          apply(dplyr::select(., dplyr::all_of(filename_cols)), 1, paste, collapse = "/")
+        else
+          rownames(seurat_metadata)
+      )
 
+    # ---- EXACTLY one row per file per assignment (optionally by proliferation) ----
     if ("proliferation" %in% colnames(seurat_metadata)) {
-      summary_counts <- seurat_metadata %>%
+      summary_tab <<- seurat_metadata %>%
         dplyr::group_by(Sample, assignment, proliferation) %>%
         dplyr::summarise(count = dplyr::n(), .groups = "drop") %>%
-        setNames(c("Sample", "assignment", "proliferation", "count"))
-
-      summary_tab <<- seurat_metadata %>%
-        dplyr::left_join(summary_counts, by = c("Sample", "assignment", "proliferation"), keep = FALSE) %>%
-        dplyr::select(-dplyr::any_of("nCount_RNA"))
+        dplyr::arrange(Sample, assignment)
     } else {
-      summary_counts <- seurat_metadata %>%
+      summary_tab <<- seurat_metadata %>%
         dplyr::group_by(Sample, assignment) %>%
         dplyr::summarise(count = dplyr::n(), .groups = "drop") %>%
-        setNames(c("Sample", "assignment", "count"))
-
-      summary_tab <<- seurat_metadata %>%
-        dplyr::left_join(summary_counts, by = c("Sample", "assignment"), keep = FALSE) %>%
-        dplyr::select(-dplyr::any_of("nCount_RNA")) %>%
-        dplyr::distinct()
+        dplyr::arrange(Sample, assignment)
     }
+
+    # Return the tidy summary (no join-back, no duplicates)
     summary_tab
   })
 
@@ -1040,8 +1127,10 @@ app_server <- function(input, output, session) {
 
 ## ───────────────────────── Unsupervised helper ─────────────────────────────
 run_unsupervised_func <- function(flow_data, res = 0.5, logfold = 0.25, percentage_cells = 0.25, batch_correct = FALSE) {
-  library(Seurat); library(dplyr)
+  library(Seurat)
+  library(dplyr)
 
+  # Ensure Timepoint column exists
   if (!("Timepoint" %in% colnames(flow_data@meta.data))) {
     flow_data@meta.data$Timepoint <- NA
   }
@@ -1050,33 +1139,44 @@ run_unsupervised_func <- function(flow_data, res = 0.5, logfold = 0.25, percenta
   ref <- NormalizeData(ref)
   ref <- FindVariableFeatures(ref)
   ref <- ScaleData(ref)
-  ref <- RunPCA(ref, "RNA", features = VariableFeatures(ref))
+  ref <- RunPCA(ref, features = VariableFeatures(ref))
+
+  # Run UMAP in 3D
   ref <- RunUMAP(ref, dims = 1:ncol(ref$pca), n.components = 3L, return.model = TRUE)
   ref <- FindNeighbors(ref, dims = 1:ncol(ref$pca), reduction = "pca")
-  ref <- FindClusters(ref, resolution = res)
 
+  # Prefer Leiden (algorithm = 4) if supported, else Louvain (algorithm = 1)
+  algo_to_use <- if ("algorithm" %in% names(formals(Seurat::FindClusters))) 4 else 1
+  message(sprintf("Running clustering with algorithm = %s (%s)",
+                  algo_to_use, ifelse(algo_to_use == 4, "Leiden", "Louvain")))
+  ref <- FindClusters(ref, resolution = res, algorithm = algo_to_use)
+
+  # Marker detection
   suppressWarnings({
     markers.pos     <- FindAllMarkers(ref, only.pos = TRUE,  min.pct = percentage_cells, logfc.threshold = logfold)
     markers.pos_neg <- FindAllMarkers(ref, only.pos = FALSE, min.pct = percentage_cells, logfc.threshold = logfold)
   })
   all_markers <- merge(markers.pos_neg, markers.pos, by = c("cluster", "gene"), all = TRUE)
 
-  # keep plain DESC in labels (remove internal __dup suffix)
+  # Clean up marker labels
   if (nrow(all_markers)) {
     all_markers$gene <- sub("__dup.*$", "", all_markers$gene)
   }
 
+  # Generate cluster assignments with +/- marker labels
   if (nrow(all_markers)) {
     all_table_neg <- table(all_markers[all_markers$avg_log2FC.x < 0, ]$cluster,
                            all_markers[all_markers$avg_log2FC.x < 0, ]$gene)
     all_table_pos <- table(all_markers[all_markers$avg_log2FC.x > 0, ]$cluster,
                            all_markers[all_markers$avg_log2FC.x > 0, ]$gene)
+
     all_labels <- lapply(1:nrow(all_table_neg), function(i) {
       labs_neg <- paste0(colnames(all_table_neg)[all_table_neg[i, ] == 1], "-")
       labs_pos <- paste0(colnames(all_table_pos)[all_table_pos[i, ] == 1], "+")
       c("cluster" = rownames(all_table_pos)[i],
         "assignment" = paste(paste(labs_pos, collapse = ""), paste(labs_neg, collapse = ""), collapse = ""))
     })
+
     if (length(all_labels)) {
       manual <- data.frame(do.call("rbind", all_labels))
       manual <- manual[order(as.numeric(manual$cluster)), ]
@@ -1084,7 +1184,12 @@ run_unsupervised_func <- function(flow_data, res = 0.5, logfold = 0.25, percenta
         dplyr::left_join(manual, by = c("seurat_clusters" = "cluster"))
     }
   }
+
+  # Ensure assignment column exists
   rownames(ref@meta.data) <- colnames(ref)
-  if (!"assignment" %in% colnames(ref@meta.data)) ref@meta.data$assignment <- as.character(Seurat::Idents(ref))
+  if (!"assignment" %in% colnames(ref@meta.data)) {
+    ref@meta.data$assignment <- as.character(Seurat::Idents(ref))
+  }
+
   ref
 }
