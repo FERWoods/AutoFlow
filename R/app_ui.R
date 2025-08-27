@@ -115,22 +115,22 @@ app_ui <- function(request) {
             )
           ),
 
-          # New: Unsupervised marker density tab (works after clustering; preprocess optional)
+          #  Unsupervised marker density tab (works after clustering; preprocess optional)
           tabPanel(
             "Unsupervised Marker Density",
             plotly::plotlyOutput("unsup_marker_qc", height = "400px")
           ),
 
           tabPanel("Cell count table", DT::dataTableOutput("tablecounts")),
-          tabPanel("UMAP plot data", plotly::plotlyOutput("plotdata", height = "600px", width = "800px")),
+          tabPanel("UMAP plot data", plotly::plotlyOutput("plotdata", height = "600px", width = "800px"))#,
 
-          tabPanel(
-            "Treatment Plot",
-            conditionalPanel(
-              condition = "input.show_treatment_plot && input.metadata_file != null",
-              plotly::plotlyOutput("plottreatment", height = "400px")
-            )
-          )
+          #tabPanel(
+          # "Treatment Plot",
+          #  conditionalPanel(
+          #    condition = "input.show_treatment_plot && input.metadata_file != null",
+          #    plotly::plotlyOutput("plottreatment", height = "400px")
+          #)
+          #)
         )
       )
     )
