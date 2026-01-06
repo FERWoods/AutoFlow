@@ -17,31 +17,35 @@
 
 ## Introduction
 
-Welcome to AutoFlow. This application processes flow cytometry data, performs various analyses, and extracts insights. It is designed for flexibility and automation.
-Welcome to AutoFlow. This application processes flow cytometry data, performs unsupervised and supervised analyses, and outputs results suitable for downstream visualization and reporting.
+**AutoFlow** is an R Shiny application for automated analysis of flow cytometry data.  
+It supports **unsupervised clustering** and **supervised classification** workflows, automating preprocessing, visualization, and summary reporting.
+
+---
 
 ## System Requirements
 
-- R version > 4.1.0
-- R ≥ 4.1.0
-- (Recommended) Rtools on Windows for building from source packages
+- **R ≥ 4.1.0**  
+- **Windows users:** Rtools for building packages from source  
+- Suggested R packages:  
+  `Seurat`, `flowCore`, `PeacoQC`, `mclust`, `data.table`, `plotly`, `DT`  
+- **Optional for Leiden clustering:**  
+  - Python (3.8+) available to `reticulate`  
+  - Python package `leidenalg`  
+
+---
 
 ## Installation
 
-Install the package from github with:
-(Requires install.packages("devtools"))
-Install the package from GitHub:
-
 ```r
-# Requires install.packages("devtools") or "remotes"
+# Requires devtools or remotes
+install.packages("devtools")
 devtools::install_github("FERWoods/AutoFlow")
-or
-(Requires install.packages("remotes"))
-# or
+
+# OR
+install.packages("remotes")
 remotes::install_github("FERWoods/AutoFlow")
 
-library(AutoFlow) 
-
+# Launch the app
 library(AutoFlow)
 run_app()
 ```

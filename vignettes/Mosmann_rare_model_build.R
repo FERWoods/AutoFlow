@@ -1,4 +1,4 @@
-## ----------------------------- Setup ---------------------------------------
+## Setup
 # Packages
 library(flowCore)
 library(dplyr)
@@ -9,7 +9,7 @@ library(pROC)
 
 set.seed(123)
 
-## ------------------------- Load + prep data --------------------------------
+# Load + prep data
 # Paths
 dir    <- "~/OneDrive - Swansea University/Documents/AutoFlow/data/benchmarking/"
 outdir <- "~/OneDrive - Swansea University/Documents/AutoFlow/outputs"
@@ -38,19 +38,19 @@ orig_names <- colnames(df)
 # Make syntactically valid names for modeling APIs
 colnames(df) <- make.names(colnames(df), unique = TRUE)
 
-## ----------------------- Stratified split (no leakage) ---------------------
+# Stratified split (no leakage)
 train_idx <- caret::createDataPartition(df$label, p = 0.70, list = FALSE)
 train <- df[train_idx, , drop = FALSE]
 test  <- df[-train_idx, , drop = FALSE]
 
-## ------------------ Upsample *training set only* (if imbalanced) ----------
+# Upsample *training set only* (if imbalanced)
 train_up <- caret::upSample(
   x = subset(train, select = -label),
   y = train$label,
   yname = "label"
 )
 
-## ------------------------ Scale using TRAIN stats --------------------------
+# Scale using TRAIN stats
 num_cols <- setdiff(colnames(train_up), "label")
 
 mu  <- sapply(train_up[, num_cols, drop = FALSE], mean, na.rm = TRUE)
@@ -70,12 +70,12 @@ train_scaled[, num_cols] <- scale_df(train_up[, num_cols, drop = FALSE], mu, sds
 test_scaled <- test
 test_scaled[, num_cols] <- scale_df(test[, num_cols, drop = FALSE], mu, sds)
 
-## --------------------- Label handling (pos = X1 first) ---------------------
+# Label handling (pos = X1 first)
 # If original labels are "1" / "0", this puts positive first.
 train_scaled$label <- factor(make.names(train_scaled$label), levels = c("X1","X0"))
 test_scaled$label  <- factor(make.names(test_scaled$label),  levels = c("X1","X0"))
 
-## ----------------------- caret tuning (ranger) -----------------------------
+# caret tuning (ranger)
 feature_names <- setdiff(colnames(train_scaled), "label")
 p <- length(feature_names)
 
@@ -109,7 +109,7 @@ fit_tuned <- caret::train(
 print(fit_tuned$bestTune)
 best <- fit_tuned$bestTune
 
-## ------------------- Final fit on full TRAIN (scaled) ----------------------
+## Final fit on full TRAIN (scaled)
 set.seed(123)
 final_fit <- ranger::ranger(
   formula = label ~ .,
@@ -125,7 +125,7 @@ final_fit <- ranger::ranger(
   num.threads = max(1, parallel::detectCores() - 1)
 )
 
-## --------------------------- Evaluation ------------------------------------
+## Evaluation
 pr <- predict(final_fit, data = test_scaled)$predictions   # matrix: cols X1/X0
 pred_class <- factor(colnames(pr)[max.col(pr, ties.method = "first")],
                      levels = levels(test_scaled$label))
@@ -141,7 +141,7 @@ roc_obj <- pROC::roc(
 )
 cat("ROC AUC:", pROC::auc(roc_obj), "\n")
 
-## ------------------------- Save model bundle --------------------------------
+# Save model bundle
 bundle <- list(
   model    = final_fit,
   features = feature_names,
@@ -162,11 +162,11 @@ bundle <- list(
 )
 saveRDS(bundle, file.path(outdir, "autoflow_mosmann_ranger_bundle.rds"))
 
-## --------------- Save raw TRAIN/TEST subsets as FCS files ------------------
+# Save raw TRAIN/TEST subsets as FCS files
 # We’ll write unscaled data with ALL original channels preserved.
 # Use the train/test row indices created earlier (train_idx).
 
-# Helper: build a flowFrame with inherited parameters/keywords and updated $TOT
+# Helperto build a flowFrame with inherited parameters/keywords and updated $TOT
 make_subset_ff <- function(ff, rows) {
   mat <- exprs(ff)[rows, , drop = FALSE]
   par <- parameters(ff)       # carry original parameter metadata

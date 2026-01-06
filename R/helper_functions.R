@@ -1,4 +1,4 @@
-# functions
+# helpers functions -- obsolete
 
 # pre-process functions
 preprocess_2 <- function(ff){

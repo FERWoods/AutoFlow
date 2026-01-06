@@ -1,4 +1,4 @@
-## ============================== Setup ======================================
+## Setup
 suppressPackageStartupMessages({
   library(flowCore)
   library(Biobase)     # for AnnotatedDataFrame
@@ -13,7 +13,7 @@ suppressWarnings({ ok <- requireNamespace("data.table", quietly = TRUE) })
 `%||%` <- function(a,b) if (!is.null(a)) a else b
 set.seed(123)
 
-## ========================== Paths / Patterns ===============================
+##Paths
 root_dir <- "~/OneDrive - Swansea University/Documents/AutoFlow/data/BM-MPS/"  # <- adjust
 outdir   <- "~/OneDrive - Swansea University/Documents/AutoFlow/outputs_bmmps"
 dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
@@ -35,7 +35,7 @@ csv_by_day <- split(all_csv, sapply(all_csv, get_day))
 days <- mixedsort(intersect(names(fcs_by_day), names(csv_by_day)))
 stopifnot(length(days) > 0, test_day %in% days)
 
-## ========== Robust reader for gating matrices (encoding/delimiter) =========
+##Robust reader for gating matrices
 read_gating_file <- function(path) {
   if (ok) {
     df <- try(data.table::fread(path, data.table = FALSE, showProgress = FALSE), silent = TRUE)
@@ -69,7 +69,7 @@ read_gating_file <- function(path) {
   df
 }
 
-## ====================== Gate resolution + coercion helpers =================
+## Gate resolution + coercion helpers
 .canon <- function(x) tolower(gsub("[^a-z0-9]+", "", x))
 
 resolve_col <- function(gdf, key) {
@@ -135,7 +135,7 @@ pick_singlets <- function(gdf) {
   best
 }
 
-## =================== EXACT gating logic + precedence (your recipe) =========
+## EXACT gating logic + precedence -- aligns with experimental defs
 mk_labels_one_day <- function(gdf) {
   sc  <- ifelse(gget(gdf, "Single Cells"), 1L, 0L)
   vc  <- ifelse(gget(gdf, "Viable Cells"), 1L, 0L)
@@ -168,7 +168,7 @@ mk_labels_one_day <- function(gdf) {
 
   ldp <- ifelse(gget(gdf, "CD34+ CD38+ Lineage Differentiated Progenitors"), 1L, 0L)
 
-  # precedence (exactly as you specified)
+  # precedence
   out <- ifelse(vc == 0L, "non-viable",
                 ifelse(sc == 0L, "debris/doublet",
                        ifelse(lm == 1L, "Late Monocytes",
@@ -187,7 +187,7 @@ mk_labels_one_day <- function(gdf) {
   factor(out, levels = lvl_order)
 }
 
-## ===================== Read FCS and build per-day data =====================
+## Read FCS and build per-day data
 read_day_flowframes <- list()
 day_exprs <- list()
 row_ranges <- list()
@@ -214,7 +214,7 @@ for (d in days) {
   rep_vec_by_day[[d]] <- rv
 }
 
-## ============================ Read gating CSVs =============================
+#Read gating CSVs
 gating_by_day <- lapply(days, function(d) read_gating_file(csv_by_day[[d]][1]))
 names(gating_by_day) <- days
 
@@ -233,7 +233,7 @@ for (d in days) {
   }
 }
 
-## =================== Decide channels (desc; Comp-* -A; no Live/Dead) ======
+#Decide channels (desc; Comp-* -A; no Live/Dead
 template_ff <- read_day_flowframes[[days[1]]][[1]]
 par_tbl <- pData(parameters(template_ff))
 
@@ -252,7 +252,7 @@ selected_names <- par_tbl$name[keep_idx]                       # raw matrix colu
 selected_desc  <- make.names(desc_txt[keep_idx], unique = TRUE) # desc labels as new names
 names(selected_desc) <- selected_names
 
-## ==================== Combine days with desired channels ===================
+#Combine days with desired channels
 dfs_by_day <- lapply(days, function(d) {
   X <- day_exprs[[d]][, selected_names, drop = FALSE]
   X <- as.data.frame(X)
@@ -276,14 +276,14 @@ df_filt <- df_all[!(df_all$label %in% drop_labels), , drop = FALSE]
 if (nrow(df_filt) < 100) df_filt <- df_all
 df_filt$label <- droplevels(df_filt$label)
 
-## ===================== Leave-one-day-out split =============================
+#Leave-one-day-out split
 test_df  <- df_filt[df_filt$.day == test_day, , drop = FALSE]
 train_df <- df_filt[df_filt$.day != test_day, , drop = FALSE]
 stopifnot(nrow(test_df) > 0, nrow(train_df) > 0)
 
 feature_names <- setdiff(colnames(train_df), c("label",".day",".rep",".row"))
 
-## ============================ Scaling (train only) =========================
+#Scaling on training set
 mu  <- sapply(train_df[, feature_names, drop = FALSE], mean, na.rm = TRUE)
 sds <- sapply(train_df[, feature_names, drop = FALSE], sd,   na.rm = TRUE)
 sds[is.na(sds) | sds == 0] <- 1
@@ -297,7 +297,7 @@ scale_df <- function(X, mu, sds) {
 train_scaled <- train_df; train_scaled[, feature_names] <- scale_df(train_df[, feature_names, drop = FALSE], mu, sds)
 test_scaled  <- test_df;  test_scaled[,  feature_names] <- scale_df(test_df[,  feature_names, drop = FALSE], mu, sds)
 
-## ============================ Train & Evaluate =============================
+#Train & Evaluate
 ctrl <- caret::trainControl(
   method = "repeatedcv", number = 3, repeats = 1,
   classProbs = FALSE, summaryFunction = defaultSummary,
@@ -320,7 +320,7 @@ print(fit$bestTune)
 pred_test <- predict(fit, newdata = test_scaled[, feature_names, drop = FALSE])
 print(caret::confusionMatrix(pred_test, droplevels(test_scaled$label)))
 
-## ------------------------- Final refit + model bundle ----------------------
+#Final refit + model bundle
 best <- fit$bestTune
 tbl <- table(train_scaled$label)
 wts <- as.numeric(1 / tbl); names(wts) <- names(tbl)
@@ -364,7 +364,7 @@ saveRDS(bundle, file.path(outdir, sprintf("bmmps_ranger_bundle_LODO_D%s.rds", te
 cat("Saved model bundle to: ",
     file.path(outdir, sprintf("bmmps_ranger_bundle_LODO_D%s.rds", test_day)), "\n", sep = "")
 
-## ======================= Write combined TRAIN/TEST FCS =====================
+# Write combined TRAIN/TEST FCS
 # Build parameter data with DESC names and append numeric meta channels.
 
 # Build selected parameter set (renamed to DESC)
@@ -426,7 +426,7 @@ cat("Wrote combined FCS (channels = DESC names + meta):\n",
     file.path(outdir, sprintf("BM_MPS_TRAIN_Dnot%s.fcs", test_day)), "\n",
     file.path(outdir, sprintf("BM_MPS_TEST_D%s.fcs",    test_day)), "\n", sep = "")
 
-## ======================= Optional sanity summaries =========================
+# Optional sanity summaries
 for (d in days) {
   cat(sprintf("Day %s label distribution (%%):\n", d))
   print(round(100 * prop.table(table(mk_labels_one_day(gating_by_day[[d]]))), 2))

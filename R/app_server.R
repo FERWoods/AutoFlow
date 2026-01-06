@@ -9,7 +9,7 @@
 #' @noRd
 app_server <- function(input, output, session) {
 
-  ## ───────────────────────────── Utilities / helpers ──────────────────────────
+  ## Utilities/helpers
   `%||%` <- function(a, b) if (!is.null(a)) a else b
 
   # Read parameter table
@@ -22,7 +22,7 @@ app_server <- function(input, output, session) {
     )
   }
 
-  # Build NAME⇄DESC maps across a list of frames (merge by NAME, label by majority DESC)
+  # Build NAME -> DESC maps across a list of frames (merge by NAME, label by majority DESC)
   build_name_label_maps <- function(frames) {
     tabs <- lapply(frames, param_table)
     union_names <- Reduce(union, lapply(tabs, `[[`, "name"))
@@ -54,10 +54,10 @@ app_server <- function(input, output, session) {
     )
   }
 
-  # Canonicalizer (for quick searches on strings)
+  # for quick searches on strings
   canon <- function(x) tolower(gsub("[^a-z0-9]+", "", x))
 
-  # ───────── Debris detection: robust GMM (2D radial if A+H, else 1D; kmeans fallback) ─────────
+  # Debris detection: robust GMM (2D radial if A+H, else 1D; kmeans fallback)
   .pick_fsc <- function(cn, which = c("A","H")) {
     which <- match.arg(which)
     pat <- if (which == "A") "^FSC[._-]?(A|Area)$" else "^FSC[._-]?(H|Height)$"
@@ -182,7 +182,7 @@ app_server <- function(input, output, session) {
       as.numeric(ff@exprs[, name_col])
     }), use.names = FALSE)
   }
-
+  # min-max normalise func
   norm_minmax <- function(x){
     r <- range(x, na.rm = TRUE)
     if (!all(is.finite(r)) || diff(r) == 0) return(rep(0, length(x)))
@@ -250,7 +250,7 @@ app_server <- function(input, output, session) {
     X
   }
 
-  # ── Auto-map model features to dataset columns ─────────────────────────────
+  # Auto-map model features to dataset columns
   # Returns a named character vector: names = model features, values = matched
   # dataset column names (or NA if no match).
   auto_map_features <- function(model_feats, dataset_cols) {
@@ -300,7 +300,7 @@ app_server <- function(input, output, session) {
     out
   }
 
-  ## ───────────────────────────── Reactive state ──────────────────────────────
+  ## Reactive state
   volumes <- c(Home = fs::path_home(), shinyFiles::getVolumes()())
   shinyFiles::shinyFileChoose(input, "files", roots = volumes, session = session)
 
@@ -315,7 +315,7 @@ app_server <- function(input, output, session) {
   default_viab_name <- reactiveVal(NULL)
   auto_viab_thr_val <- reactiveVal(NULL)
 
-  seurat_dat_comb <- reactiveVal(NULL)  # columns are NAMEs
+  seurat_dat_comb <- reactiveVal(NULL)
   seurat_meta_comb<- reactiveVal(NULL)
 
   unsup_obj      <- reactiveVal(NULL)
@@ -328,7 +328,7 @@ app_server <- function(input, output, session) {
   class_levels  <- reactiveVal(NULL)
   feature_map   <- reactiveVal(NULL)
 
-  ## ───────────────────────────── File ingest (RAW only) ──────────────────────
+  ## File read in (RAW only)
   output$files <- renderPrint({
     if (is.integer(input$files)) {
       cat("No directory has been selected")
@@ -360,7 +360,7 @@ app_server <- function(input, output, session) {
     TRUE
   })
 
-  ## ───────────────────────────── Preprocess toggle (robust) ───────────────────
+  ## Preprocess toggle
   observeEvent(list(raw_ff(), input$preprocess), {
     req(raw_ff())
 
@@ -453,7 +453,7 @@ app_server <- function(input, output, session) {
     auto_viab_thr_val(if (length(vv)) auto_threshold_gmm(vv) else 0.5)
   }, ignoreInit = TRUE)
 
-  ## ───────────────── Rebuild combined matrix ────────────────────────────────
+  ## Rebuild combined matrix
   rebuild_combined <- function() {
     CF <- use_ff(); req(CF)
 
@@ -519,7 +519,7 @@ app_server <- function(input, output, session) {
 
   observeEvent(use_ff(), { rebuild_combined() })
 
-  ## ───────────────────────────── Sidebar UI ─────────────────────────────────
+  ## Sidebar UI
   desc_choice_map <- reactive({
     ntl <- name_to_label(); req(ntl, seurat_dat_comb())
     present <- intersect(names(ntl), colnames(seurat_dat_comb()))
@@ -538,7 +538,7 @@ app_server <- function(input, output, session) {
                        choices = choices, selected = names(choices))
   })
 
-  ## ───────────────────── Viability controls (robust to preproc status) ─────────────────────
+  ## Viability controls (robust to preproc status)
   output$viability_controls <- renderUI({
     req(files_all())
     ntl <- name_to_label(); req(ntl)
@@ -611,7 +611,7 @@ app_server <- function(input, output, session) {
             format(total))
   })
 
-  ## ───────────────────────────── Unsupervised ────────────────────────────────
+  ## Unsupervised
   output$unsup_qc_controls <- renderUI({
     req(unsup_obj(), seurat_dat_comb(), label_to_name())
     asn <- sort(unique(as.character(unsup_obj()@meta.data$assignment)))
@@ -671,7 +671,7 @@ app_server <- function(input, output, session) {
     # Build Seurat; Seurat uses columns as cells
     seur <- SeuratObject::CreateSeuratObject(counts = t(X), meta.data = meta)
 
-    # Store the *original* row ids we used to build this Seurat object
+    # Store the original row ids we used to build this Seurat object
     # (this survives any internal renaming and is used by the QC plot)
     seur@meta.data$autoflow_row_id <- row_ids
 
@@ -685,7 +685,7 @@ app_server <- function(input, output, session) {
     showNotification("Unsupervised clustering complete.", type = "message")
   })
 
-  ## ───────────────────────────── Marker QC plots ────────────────────────────
+  ## Marker QC plots
   output$marker_qc <- plotly::renderPlotly({
     req(files_all())
     validate(need(!is.null(use_ff()), "Load data to view viability densities."))
@@ -731,7 +731,7 @@ app_server <- function(input, output, session) {
     mk_name <- label_to_name()[[ui_label]]
     validate(need(mk_name %in% colnames(seurat_dat_comb()), "Selected marker name not present in data."))
 
-    # Expression values from the big matrix (cells x NAME)
+    # Expression values from the matrix (cells x NAME)
     vals_whole <- suppressWarnings(as.numeric(seurat_dat_comb()[, mk_name]))
 
     # Use the exact row ids that built the Seurat object (stored at clustering time)
@@ -789,7 +789,7 @@ app_server <- function(input, output, session) {
   })
 
 
-  ## ───────────────────────────── Supervised (unchanged API) ─────────────────
+  ## Supervised
   output$supervised_controls <- renderUI({
     req(input$model_type == "Supervised")
     if (is.null(input$model_file)) return(helpText("Awaiting model bundle upload…"))
@@ -963,7 +963,7 @@ app_server <- function(input, output, session) {
     showNotification("Supervised predictions completed.", type = "message")
   })
 
-  ## ───────────────────────────── Outputs ─────────────────────────────────────
+  ## Outputs
   out_dat_reactive <- reactive({
     if (identical(input$model_type, "Supervised")) {
       req(supervised_obj()); supervised_obj()
@@ -1018,7 +1018,7 @@ app_server <- function(input, output, session) {
           rownames(seurat_metadata)
       )
 
-    # ---- EXACTLY one row per file per assignment (optionally by proliferation) ----
+    # EXACTLY one row per file per assignment
     if ("proliferation" %in% colnames(seurat_metadata)) {
       summary_tab <<- seurat_metadata %>%
         dplyr::group_by(Sample, assignment, proliferation) %>%
@@ -1040,7 +1040,7 @@ app_server <- function(input, output, session) {
     plotly::plot_ly(mtcars, x = ~wt, y = ~mpg, type = "scatter", mode = "markers")
   })
 
-  ## ───────────────────────────── Downloads ──────────────────────────────────
+  ## Downloads
   output$downloadcounts <- downloadHandler(
     filename = function() paste(Sys.Date(), "AutoFlow_counts.csv", sep = "_"),
     content = function(fname) {
@@ -1063,7 +1063,7 @@ app_server <- function(input, output, session) {
     }
   )
 
-  # Export processed FCS (zip of FCS files with flag channels)
+  # Export processed FCS
   output$downloadprocessed <- downloadHandler(
     filename = function() paste0(Sys.Date(), "_processed_fcs.zip"),
     content = function(zipfile) {
@@ -1125,7 +1125,7 @@ app_server <- function(input, output, session) {
   )
 }
 
-## ───────────────────────── Unsupervised helper ─────────────────────────────
+## Unsupervised helper
 run_unsupervised_func <- function(flow_data, res = 0.5, logfold = 0.25, percentage_cells = 0.25, batch_correct = FALSE) {
   library(Seurat)
   library(dplyr)

@@ -68,7 +68,7 @@ app_ui <- function(request) {
           uiOutput("unsup_qc_controls")
         ),
 
-        # ---------------- Supervised controls ----------------
+        # Supervised controls
         conditionalPanel(
           condition = "input.model_type == 'Supervised'",
           tags$p("Upload pre-trained model bundle (.rds) with: features, scaling$means/sds, model, (optional) levels"),
@@ -89,7 +89,7 @@ app_ui <- function(request) {
         # Downloads
         downloadButton("downloadprocessed", "Download pre-processed .fcs"),
         downloadButton("downloadcounts", "Download cell counts"),
-        downloadButton("downloadcountsdelta", "Download cell counts (DeltaFlow format)"),
+        downloadButton("downloadcountsdelta", "Download cell counts (Wide format)"),
         downloadButton("downloadseurat", "Download Seurat Object")
       ),
 
