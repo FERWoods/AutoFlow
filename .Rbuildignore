@@ -20,3 +20,6 @@ $run_dev.*
 ^Makefile$
 ^Jenkinsfile$
 ^\.gitlab-ci\.yml$
+^\.idea$
+^main\.R$
+^test_file$

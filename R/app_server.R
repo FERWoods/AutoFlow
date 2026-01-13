@@ -1123,9 +1123,8 @@ app_server <- function(input, output, session) {
     filename = function() paste(Sys.Date(), "DeltaFlow_counts.csv", sep = "_"),
     content = function(fname) {
       req(out_dat_reactive(), summary_tab)
-      library(tidyr)
       wide <- summary_tab %>%
-        mutate(assignment = paste0(assignment, " Count"),
+        dplyr::mutate(assignment = paste0(assignment, " Count"),
                count = as.numeric(count),
                assignment = as.character(assignment)) %>%
         tidyr::pivot_wider(names_from = assignment, values_from = count, values_fill = list(count = 0))
@@ -1197,8 +1196,6 @@ app_server <- function(input, output, session) {
 
 ## Unsupervised helper
 run_unsupervised_func <- function(flow_data, res = 0.5, logfold = 0.25, percentage_cells = 0.25, batch_correct = FALSE) {
-  library(Seurat)
-  library(dplyr)
 
   # Ensure Timepoint column exists
   if (!("Timepoint" %in% colnames(flow_data@meta.data))) {
@@ -1206,25 +1203,25 @@ run_unsupervised_func <- function(flow_data, res = 0.5, logfold = 0.25, percenta
   }
 
   ref <- flow_data
-  ref <- NormalizeData(ref)
-  ref <- FindVariableFeatures(ref)
-  ref <- ScaleData(ref)
-  ref <- RunPCA(ref, features = VariableFeatures(ref))
+  ref <- Seurat::NormalizeData(ref)
+  ref <- Seurat::FindVariableFeatures(ref)
+  ref <- Seurat::ScaleData(ref)
+  ref <- Seurat::RunPCA(ref, features = VariableFeatures(ref))
 
   # Run UMAP in 3D
-  ref <- RunUMAP(ref, dims = 1:ncol(ref$pca), n.components = 3L, return.model = TRUE)
-  ref <- FindNeighbors(ref, dims = 1:ncol(ref$pca), reduction = "pca")
+  ref <- Seurat::RunUMAP(ref, dims = 1:ncol(ref$pca), n.components = 3L, return.model = TRUE)
+  ref <- Seurat::FindNeighbors(ref, dims = 1:ncol(ref$pca), reduction = "pca")
 
   # Prefer Leiden (algorithm = 4) if supported, else Louvain (algorithm = 1)
   algo_to_use <- if ("algorithm" %in% names(formals(Seurat::FindClusters))) 4 else 1
   message(sprintf("Running clustering with algorithm = %s (%s)",
                   algo_to_use, ifelse(algo_to_use == 4, "Leiden", "Louvain")))
-  ref <- FindClusters(ref, resolution = res, algorithm = algo_to_use)
+  ref <- Seurat::FindClusters(ref, resolution = res, algorithm = algo_to_use)
 
   # Marker detection
   suppressWarnings({
-    markers.pos     <- FindAllMarkers(ref, only.pos = TRUE,  min.pct = percentage_cells, logfc.threshold = logfold)
-    markers.pos_neg <- FindAllMarkers(ref, only.pos = FALSE, min.pct = percentage_cells, logfc.threshold = logfold)
+    markers.pos     <- Seurat::FindAllMarkers(ref, only.pos = TRUE,  min.pct = percentage_cells, logfc.threshold = logfold)
+    markers.pos_neg <- Seurat::FindAllMarkers(ref, only.pos = FALSE, min.pct = percentage_cells, logfc.threshold = logfold)
   })
   all_markers <- merge(markers.pos_neg, markers.pos, by = c("cluster", "gene"), all = TRUE)
 
