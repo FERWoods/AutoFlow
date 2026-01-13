@@ -199,7 +199,7 @@ app_server <- function(input, output, session) {
     # Safety: don't allow pathological removals
     keep <- out$GoodCells
     if (!is.null(keep) && mean(keep, na.rm = TRUE) < 0.2) {
-      warning("PeacoQC would remove >80% of events — skipping for this file")
+      warning("PeacoQC would remove >80% of events - skipping for this file")
       return(ff)
     }
 
@@ -342,7 +342,7 @@ app_server <- function(input, output, session) {
   proc_ff  <- reactiveVal(NULL)
   use_ff   <- reactive({ proc_ff() %||% raw_ff() })
 
-  # NAME ↔ LABEL
+  # reactive val placeholders
   name_to_label <- reactiveVal(NULL)
   label_to_name <- reactiveVal(NULL)
 
@@ -441,7 +441,7 @@ app_server <- function(input, output, session) {
       }, error = function(e) ff)
     }
 
-    # Apply stepwise per file; track debris counts but don’t fail
+    # Apply stepwise per file; track debris counts but don't fail
     n_before   <- vapply(R, function(ff) nrow(ff@exprs), numeric(1))
     deb_counts <- numeric(length(R))
 
@@ -461,7 +461,7 @@ app_server <- function(input, output, session) {
     ok_lengths <- vapply(P, function(ff) inherits(ff, "flowFrame") && nrow(ff@exprs) > 0, logical(1))
     if (!length(P) || !all(ok_lengths)) {
       proc_ff(NULL)  # ensure downstream uses raw
-      showNotification("Pre-processing failed or produced empty output — proceeding with RAW data.", type = "warning", duration = 6)
+      showNotification("Pre-processing failed or produced empty output - proceeding with RAW data.", type = "warning", duration = 6)
     } else {
       proc_ff(P)
 
@@ -608,7 +608,7 @@ app_server <- function(input, output, session) {
       ),
       sliderInput(
         "viability_threshold",
-        "Threshold (marker < threshold → viable):",
+        "Threshold (marker < threshold -> viable):",
         min = -1, max = 6,
         value = round(viab_thr_rv() %||% start_thr, 3),
         step = 0.001
@@ -862,7 +862,7 @@ app_server <- function(input, output, session) {
   ## Supervised
   output$supervised_controls <- renderUI({
     req(input$model_type == "Supervised")
-    if (is.null(input$model_file)) return(helpText("Awaiting model bundle upload…"))
+    if (is.null(input$model_file)) return(helpText("Awaiting model bundle upload..."))
     req(model_bundle())
     b <- model_bundle()
     tags$div(
@@ -929,7 +929,7 @@ app_server <- function(input, output, session) {
 
     tagList(
       tags$hr(),
-      tags$h5("Feature mapping (model → uploaded dataset)"),
+      tags$h5("Feature mapping (model -> uploaded dataset)"),
       actionButton("autoMap", "Auto-map by name"),
       tags$small("  (case-insensitive exact; then make.names heuristic)"),
       tags$br(), tags$br(),
