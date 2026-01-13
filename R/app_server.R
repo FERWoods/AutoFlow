@@ -54,8 +54,8 @@ app_server <- function(input, output, session) {
     )
   }
 
-  # for quick searches on strings
-  canon <- function(x) tolower(gsub("[^a-z0-9]+", "", x))
+  # for quick searches on strings later on
+  canon <- function(x) gsub("[^a-z0-9]+", "", tolower(x))
 
   # Debris detection: robust GMM (2D radial if A+H, else 1D; kmeans fallback)
   .pick_fsc <- function(cn, which = c("A","H")) {
@@ -92,7 +92,7 @@ app_server <- function(input, output, session) {
     s    <- score[s_ok]
     if (length(s) < 50) return(integer(n))
 
-    # Try Mclust
+    # Try Mclust 2 Gaussians
     flg_ok <- try({
       fit <- mclust::Mclust(s, G = 2, verbose = FALSE)
       debris_comp <- which.min(fit$parameters$mean)
@@ -146,7 +146,7 @@ app_server <- function(input, output, session) {
     pd_all <- flowCore::pData(flowCore::parameters(ff))
     desc_fb <- ifelse(!is.na(pd_all$desc) & nzchar(pd_all$desc), pd_all$desc, pd_all$name)
     pool    <- unique(c(desc_fb, pd_all$name))
-    vi_idx  <- grepl("viab|live|livedead|7aad|amine|dapi|v525", canon(pool))
+    vi_idx  <- grepl("viab|live|livedead", canon(pool))
     vi_names<- intersect(pool[vi_idx], flowCore::colnames(ff))
     trans_channels <- unique(c(trans_channels, vi_names))
     trans_channels <- trans_channels[trans_channels %in% flowCore::colnames(ff)]
@@ -165,13 +165,47 @@ app_server <- function(input, output, session) {
     tryCatch(PeacoQC::RemoveMargins(ff, channels = 1:ncol(ff), save_fcs = FALSE, report = FALSE),
              error = function(e) ff)
   }
-  run_qc_peacoqc <- function(ff) {
+  run_qc_peacoqc <- function(ff, min_events = 5000) {
+
+    n <- nrow(ff@exprs)
+
+    # Skip if too small
+    if (n < min_events) {
+      message("Skipping PeacoQC: only ", n, " events (< ", min_events, ")")
+      return(ff)
+    }
+
+    # Exclude Time from QC channels
+    cn <- flowCore::colnames(ff)
+    sig_channels <- cn[!grepl("^Time$", cn, ignore.case = TRUE)]
+
     out <- tryCatch(
-      PeacoQC::PeacoQC(ff, channels = c("Time"), report = FALSE, save_fcs = FALSE),
-      error = function(e) NULL
+      PeacoQC::PeacoQC(
+        ff,
+        channels = sig_channels,
+        report = FALSE,
+        save_fcs = FALSE
+      ),
+      error = function(e) {
+        warning("PeacoQC failed: ", conditionMessage(e))
+        NULL
+      }
     )
-    if (is.null(out)) ff else (out$FinalFF %||% ff)
+
+    if (is.null(out)) {
+      return(ff)
+    }
+
+    # Safety: don't allow pathological removals
+    keep <- out$GoodCells
+    if (!is.null(keep) && mean(keep, na.rm = TRUE) < 0.2) {
+      warning("PeacoQC would remove >80% of events — skipping for this file")
+      return(ff)
+    }
+
+    out$FinalFF %||% ff
   }
+
 
   # Marker vector across frames
   get_marker_vector <- function(frames, name_col) {
@@ -327,7 +361,13 @@ app_server <- function(input, output, session) {
   scaling_sds   <- reactiveVal(NULL)
   class_levels  <- reactiveVal(NULL)
   feature_map   <- reactiveVal(NULL)
-
+  viab_thr_rv  <- reactiveVal(NULL)     # the actual threshold used everywhere
+  viab_thr_src <- reactiveVal("auto")   # "auto" or "manual"
+  # Debounced version of the slider input (wait 1s after last change)
+  viab_thr_deb <- debounce(
+    reactive(as.numeric(input$viability_threshold)),
+    millis = 1000
+  )
   ## File read in (RAW only)
   output$files <- renderPrint({
     if (is.integer(input$files)) {
@@ -372,8 +412,10 @@ app_server <- function(input, output, session) {
       label_to_name(maps$label_to_name)
 
       ntl <- maps$name_to_label
-      vi_idx <- grep("viab|live|livedead|7aad|amine|dapi|v525", canon(unname(ntl)))
-      default_viab_name(if (length(vi_idx)) names(ntl)[vi_idx[1]] else names(ntl)[1])
+      vi_idx_all  <- grep("viab|live|livedead", canon(unname(ntl)))# search viable column
+      vi_idx_A <- vi_idx_all[ grepl("\\.A\\]", unname(ntl)[vi_idx_all]) | grepl("\\.A$", unname(ntl)[vi_idx_all]) ] #choose .A not .H
+
+      default_viab_name(if (length(vi_idx_A)) names(ntl)[vi_idx_A[1]] else names(ntl)[1])
 
       auto_viab_thr_val(NULL)
       return(invisible())
@@ -445,8 +487,10 @@ app_server <- function(input, output, session) {
     label_to_name(maps$label_to_name)
 
     ntl <- maps$name_to_label
-    vi_idx <- grep("viab|live|livedead|7aad|amine|dapi|v525", canon(unname(ntl)))
-    default_viab_name(if (length(vi_idx)) names(ntl)[vi_idx[1]] else names(ntl)[1])
+    vi_idx_all  <- grep("viab|live|livedead", canon(unname(ntl)))# search viable column
+    vi_idx_A <- vi_idx_all[ grepl("\\.A\\]", unname(ntl)[vi_idx_all]) | grepl("\\.A$", unname(ntl)[vi_idx_all]) ] #choose .A not .H
+
+    default_viab_name(if (length(vi_idx_A)) names(ntl)[vi_idx_A[1]] else names(ntl)[1])
 
     # Auto-threshold viability from the chosen set
     vv <- get_marker_vector(FF_use, default_viab_name())
@@ -549,6 +593,10 @@ app_server <- function(input, output, session) {
       vv0 <- get_marker_vector(FF_use, default_viab_name() %||% names(ntl)[1])
       if (length(vv0)) auto_threshold_gmm(vv0) else 0.5
     }
+    if (is.null(viab_thr_rv())) {
+      viab_thr_rv(start_thr)
+      viab_thr_src("auto")
+    }
 
     tagList(
       h4("Marker / Viability QC"),
@@ -561,13 +609,21 @@ app_server <- function(input, output, session) {
       sliderInput(
         "viability_threshold",
         "Threshold (marker < threshold → viable):",
-        min = -1, max = 6, value = round(start_thr, 3), step = 0.001
+        min = -1, max = 6,
+        value = round(viab_thr_rv() %||% start_thr, 3),
+        step = 0.001
       ),
       actionButton("recalc_auto_thr", "Auto-threshold"),
       tags$div(style="margin-top:6px;",
                tags$small(textOutput("viability_summary", inline = TRUE)))
     )
   })
+  observeEvent(viab_thr_deb(), {
+    req(!is.null(viab_thr_deb()))
+    viab_thr_rv(as.numeric(viab_thr_deb()))
+    viab_thr_src("manual")
+  }, ignoreInit = TRUE)
+
 
   observeEvent(default_viab_name(), {
     req(default_viab_name(), name_to_label())
@@ -579,30 +635,45 @@ app_server <- function(input, output, session) {
   observeEvent(list(input$viability_marker_name, use_ff()), {
     req(use_ff(), input$viability_marker_name)
     vv <- get_marker_vector(use_ff(), input$viability_marker_name)
+    vv <- vv[is.finite(vv)]
     if (!length(vv)) return()
-    rng <- stats::quantile(vv[is.finite(vv)], c(0.001, 0.999), na.rm = TRUE)
-    thr <- auto_viab_thr_val() %||% auto_threshold_gmm(vv)
+
+    rng <- quantile(vv, c(0.001, 0.999), na.rm = TRUE)
     updateSliderInput(session, "viability_threshold",
-                      min = round(rng[1], 3), max = round(rng[2], 3),
-                      value = round(thr, 3))
+                      min = round(rng[1], 3), max = round(rng[2], 3))
+
+    if (is.null(viab_thr_rv()) || identical(viab_thr_src(), "auto")) {
+      thr <- auto_viab_thr_val() %||% auto_threshold_gmm(vv)  # only here
+      viab_thr_rv(thr)
+      viab_thr_src("auto")
+      updateSliderInput(session, "viability_threshold", value = round(thr, 3))
+    }
   }, ignoreInit = TRUE)
+
 
   observeEvent(input$recalc_auto_thr, {
     req(use_ff(), input$viability_marker_name)
-    vv  <- get_marker_vector(use_ff(), input$viability_marker_name)
+    vv <- get_marker_vector(use_ff(), input$viability_marker_name)
+    vv <- vv[is.finite(vv)]
     if (!length(vv)) return()
+
     thr <- auto_threshold_gmm(vv)
     auto_viab_thr_val(thr)
+
+    viab_thr_rv(thr)
+    viab_thr_src("auto")
+
     updateSliderInput(session, "viability_threshold", value = round(thr, 3))
     showNotification(sprintf("Auto-threshold set to %.3f", thr), type = "message", duration = 3)
   })
+
 
   output$viability_summary <- renderText({
     req(use_ff(), input$viability_marker_name, !is.null(input$viability_threshold))
     vv <- get_marker_vector(use_ff(), input$viability_marker_name)
     vv <- vv[is.finite(vv)]
     if (!length(vv)) return("No values available for this marker.")
-    thr <- as.numeric(input$viability_threshold)
+    thr <- viab_thr_rv() %||% as.numeric(input$viability_threshold)
     pct_non_viable <- mean(vv >= thr, na.rm = TRUE) * 100
     total <- length(vv)
     sprintf("Non-viable at current threshold: %.1f%% (n=%s of %s)",
@@ -657,12 +728,12 @@ app_server <- function(input, output, session) {
     meta <- seurat_meta_comb()
 
     # If subsampling is needed, KEEP row names in lockstep with X
-    if (nrow(X) > 1e5) {
-      set.seed(1L)
-      idx  <- sample(nrow(X), 1e5)
-      X    <- X[idx, , drop = FALSE]
-      meta <- meta[idx, , drop = FALSE]
-    }
+    #if (nrow(X) > 1e5) {
+    #  set.seed(1L)
+    #  idx  <- sample(nrow(X), 1e5)
+    #  X    <- X[idx, , drop = FALSE]
+    #  meta <- meta[idx, , drop = FALSE]
+    #}
 
     # Make 100% sure meta rownames match cell ids (rownames of X)
     stopifnot(identical(rownames(X), rownames(meta)))
@@ -672,7 +743,6 @@ app_server <- function(input, output, session) {
     seur <- SeuratObject::CreateSeuratObject(counts = t(X), meta.data = meta)
 
     # Store the original row ids we used to build this Seurat object
-    # (this survives any internal renaming and is used by the QC plot)
     seur@meta.data$autoflow_row_id <- row_ids
 
     seur <- run_unsupervised_func(

@@ -29,9 +29,9 @@ app_ui <- function(request) {
         verbatimTextOutput("files", placeholder = TRUE),
         tags$hr(),
 
-        # Metadata upload (always visible)
-        fileInput("metadata_file", "Upload Metadata", accept = c(".csv", ".xlsx")),
-        tags$hr(),
+        # Metadata upload
+        #fileInput("metadata_file", "Upload Metadata", accept = c(".csv", ".xlsx")),
+        #tags$hr(),
 
         # Preprocess toggle (optional)
         radioButtons("preprocess", "Pre-process files",
@@ -80,15 +80,15 @@ app_ui <- function(request) {
         ),
 
         # Optional treatment plot
-        checkboxInput("show_treatment_plot", "Show Treatment Plot", value = FALSE),
-        uiOutput("select_color_column"),
-        uiOutput("select_x_column"),
-        uiOutput("select_cells"),
-        tags$hr(),
+        #checkboxInput("show_treatment_plot", "Show Treatment Plot", value = FALSE),
+        #uiOutput("select_color_column"),
+        #uiOutput("select_x_column"),
+        #uiOutput("select_cells"),
+        #tags$hr(),
 
         # Downloads
         downloadButton("downloadprocessed", "Download pre-processed .fcs"),
-        downloadButton("downloadcounts", "Download cell counts"),
+        downloadButton("downloadcounts", "Download cell counts (Long format)"),
         downloadButton("downloadcountsdelta", "Download cell counts (Wide format)"),
         downloadButton("downloadseurat", "Download Seurat Object")
       ),

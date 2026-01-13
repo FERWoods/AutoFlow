@@ -54,16 +54,15 @@ run_app()
 Selecting FCS Files
 Click "Select FCS Files".
 Choose one or more FCS files.
-Metadata Extraction
 The application extracts metadata from FCS files, using file paths for reference.
 
 ## Automatic Data Processing (Optional)
-- Single Cell Identification: Fits a linear model to FSC.A and FSC.H.
+- Single Cell Identification: RemoveDoublets() via PeacoQC.
 - Compensation: Uses "SPILLOVER" matrix for compensation.
 - Logicle Transformation: Manages negative values and dynamic range.
 - Quality Control with PeacoQC: Removes low-quality events.
-- Debris Removal: Uses Gaussian mixture model.
-- Viability Identification: Threshold on "Viability" variable (<2).
+- Debris Removal: Uses Gaussian mixture model (GMM via Mclust).
+- Viability Identification: Threshold generated using GMM on Live/Dead marker, with user option to tune.
 - Channel Identification and Renaming
 - Renames channels by extracting descriptions from flow cytometry files.
 
@@ -72,8 +71,6 @@ The application extracts metadata from FCS files, using file paths for reference
 2. Choose one or more `.FCS` files.  
    AutoFlow extracts basic metadata (file name/path) and carries it forward for summaries.
 
-**Metadata (optional)**  
-Upload a `.csv`/`.xlsx` with sample annotations to enable treatment plots and grouped summaries.
 
 ## Automatic Data Processing
 
@@ -82,20 +79,19 @@ If **Pre-process files = Yes**, AutoFlow performs:
 - **Compensation** using the file’s `SPILL`/`SPILLOVER` keyword.
 - **Logicle transformation** (biexponential) on compensated channels.
 - **QC with PeacoQC** (margin removal and quality filtering).
-- **Debris removal** via a 2-component GMM on FSC.A.
-- **Singlet clean-up** using the FSC.H ~ FSC.A relationship.
-- **Viability filter** (if a “Viability” channel is present).
+- **Debris removal** GMM on FSC.A and SSC.A.
+- **Singlet clean-up** using the FSC.H ~ FSC.A relationship with RemoveDoublets() (PeacoQC).
+- **Viability filter** (if a “Viability” channel is present, performs a GMM on viability to fine +/- threshold. User can manually adjust this via interface.).
 - **Channel selection** (see below) and renaming to human-readable labels.
 
-If **Pre-process files = No**, AutoFlow still standardizes channel names using the FCS `desc` where available (falling back to `name`), while leaving raw values intact.
+If **Pre-process files = No**, AutoFlow still standardises channel names using the FCS `desc` where available (falling back to `name`), while leaving raw values intact.
 
 ## Channel Identification and Renaming
 
 AutoFlow reads per-channel metadata (`flowCore::parameters(ff)`) and:
 - Uses **`desc`** where available (fallback to `name`).
 - Prefers **area channels** (`*-A`) and **compensated channels** (`Comp-*`).
-- **Excludes Live/Dead/Viability** from feature sets used for phenotyping by default.
-- Preserves **EdU**/**proliferation** markers for downstream analysis.
+- User selects which columns are used for downstream unsupervised learning.
 
 Duplicate `desc` values are disambiguated by appending the original `name`.
 
@@ -131,7 +127,7 @@ AutoFlow supports loading **pre-trained models** to classify cells, requiring a 
 - Upload a **Model Bundle** (`.rds`) via **Model Type → Supervised**.
 - AutoFlow will:
   1. **Match features** between the uploaded data and the model’s required feature set.
-  2. **Standardize** the data using the **means/SDs stored in the bundle**.
+  2. **Standardise** the data using the **means/SDs stored in the bundle**.
   3. **Predict** cell types (e.g., multiclass Random Forest/Ranger).
 - If any model features are missing from the uploaded data, AutoFlow:
   - **Automatically maps** exact name matches and obvious synonyms (when available).
@@ -203,7 +199,7 @@ When you upload a bundle in **Supervised** mode:
    - If anything is still unresolved, a **feature mapping UI** lets you manually map your file’s columns to the model’s required features.  
      - Already-matched columns are pre-selected so you *only* map the ambiguous ones.
 
-2. **Standardization**
+2. **Standardisation**
    - AutoFlow applies **z-scaling** using the bundle’s `scaling$means` and `scaling$sds` (computed on the training set that produced the model).
    - If the bundle sets `meta$zscale = TRUE`, scaling is always applied; otherwise raw values are used.
    - Optional **min–max** normalization can be enabled in the app if your model expects it (rare; most models just need z-scaling).
@@ -215,9 +211,8 @@ When you upload a bundle in **Supervised** mode:
 ## Output and Results
 
 3. **Restart R or RStudio**, then run the following command to verify the tools are available:
-**Visualizations**
+**Visualisations**
 - UMAP (3D) colored by cluster or predicted label.
-- Treatment plot (when metadata is provided).
 
 **Tables**
 - Per-file **cell counts** by predicted/assigned class (downloadable CSV).
