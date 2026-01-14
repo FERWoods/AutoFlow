@@ -1,6 +1,6 @@
 Package: autoflow
 Title: Autogating for flow cytometry data
-Version: 3.0.0
+Version: 1.0.0
 Authors@R: 
     person("Freya", "Woods", , "freyawoods94@gmail.com", role = c("aut", "cre"))
 Description: An autogating application for flow cytometry data containing a supervised machine learning workflow and an unsupervised working.
