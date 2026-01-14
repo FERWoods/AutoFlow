@@ -1,8 +1,0 @@
-#name: name
-#FCS_File: NA
-name	FCS_File
-V1	V1	1_FCS_combined_D28.fcs
-V2	V2	2_FCS_combined_D28.fcs
-V3	V3	3_FCS_combined_D28.fcs
-V4	V4	4_FCS_combined_D28.fcs
-V5	V5	5_FCS_combined_D28.fcs

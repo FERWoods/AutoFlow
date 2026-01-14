@@ -51,6 +51,7 @@ run_app()
 ```
 
 ## Getting Started
+(With either some example data (available on Zenodo DOI: 10.5281/zenodo.18235796), or your own flow cytometry data.)
 Selecting FCS Files
 Click "Select FCS Files".
 Choose one or more FCS files.
@@ -134,7 +135,7 @@ AutoFlow supports loading **pre-trained models** to classify cells, requiring a 
   - If anything remains unresolved, it opens an **interactive feature mapper** so you can point-and-click to map your columns to the model’s features.
 
 This error usually means R cannot find the system tools required to build packages from source — particularly on Windows.
-> Tip: Example scripts for **creating model bundles** (including **BM-MPS leave-one-day-out** training and classic binary models) are provided in `inst/examples/` (see below: [Model Bundles (Supervised)](#model-bundles-supervised)).
+> Tip: Example scripts for **creating model bundles** (including **BM-MPS leave-one-day-out** training and classic binary models) are provided in `inst/extdata/Supervised_model_build_helper_scrips/` (see below: [Model Bundles (Supervised)](#model-bundles-supervised)).
 
 #### Solution: Install and Configure Rtools
 ## Model Bundles (Supervised)
@@ -172,9 +173,9 @@ saveRDS(bundle, "my_model_bundle.rds")
 ```
 
 **Example bundling scripts** (installed with the package):
-- `vignettes/Bmmps_model_build.R`
-- `vignettes/Mosmann_rare_model_build.R`
-- `vignettes/Nilsson_rare_model_build.R`
+- `inst/extdata/Supervised_model_build_helper_scripts/Bmmps_model_build.R`
+- `inst/extdata/Supervised_model_build_helper_scripts/Mosmann_rare_model_build.R`
+- `inst/extdata/Supervised_model_build_helper_scripts/Nilsson_rare_model_build.R`
 
 
 Each example:
