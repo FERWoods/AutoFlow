@@ -12,7 +12,6 @@ Imports:
     biocthis (>= 1.18.0),
     config,
     data.table,
-    dplyr,
     DT,
     e1071,
     flowCore (>= 2.19.0),

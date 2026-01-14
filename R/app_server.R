@@ -4,7 +4,6 @@
 #' @param input,output,session Internal parameters for {shiny}.
 #' @import shiny
 #' @import Seurat
-#' @import dplyr
 #' @import flowCore
 #' @noRd
 app_server <- function(input, output, session) {
