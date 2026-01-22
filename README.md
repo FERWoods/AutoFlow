@@ -24,7 +24,7 @@ It supports **unsupervised clustering** and **supervised classification** workfl
 
 ## System Requirements
 
-- **R ≥ 4.1.0**  
+- **R ≥ 4.5.0**  
 - **Windows users:** Rtools for building packages from source  
 - Suggested R packages:  
   `Seurat`, `flowCore`, `PeacoQC`, `mclust`, `data.table`, `plotly`, `DT`  
