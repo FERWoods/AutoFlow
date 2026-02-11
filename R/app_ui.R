@@ -48,7 +48,7 @@ app_ui <- function(request) {
                      choices = c("Unsupervised", "Supervised"),
                      selected = "Unsupervised"),
 
-        # ---------------- Unsupervised controls (independent of preprocessing) ----------------
+        # Unsupervised controls (independent of preprocessing)
         conditionalPanel(
           condition = "input.model_type == 'Unsupervised'",
           tags$p("Select UMAP clustering parameters (unsupervised)"),

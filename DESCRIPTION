@@ -21,6 +21,7 @@ Imports:
     fs,
     ggplot2,
     golem,
+    magrittr,
     markdown,
     mclust,
     PeacoQC (>= 1.18.0),
