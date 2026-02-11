@@ -5,6 +5,7 @@
 #' @import shiny
 #' @import Seurat
 #' @import flowCore
+#' @importFrom magrittr %>%
 #' @noRd
 app_server <- function(input, output, session) {
 
