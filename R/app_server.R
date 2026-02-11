@@ -1070,68 +1070,80 @@ app_server <- function(input, output, session) {
     }
   })
 
-  output$tablecounts <- DT::renderDataTable({
+  summary_tab <- reactive({
     req(out_dat_reactive())
     out_dat <- out_dat_reactive()
 
-    # Start from meta only; drop Seurat bookkeeping cols
-    seurat_metadata <- out_dat@meta.data %>%
+    seurat_metadata <- out_dat@meta.data |>
       dplyr::select(-dplyr::matches("^n(Count|Feature)_"))
 
-    # Build a single "Sample" column from filename* (if present)
     filename_cols <- grep("^filename", colnames(seurat_metadata), value = TRUE)
-    seurat_metadata <- seurat_metadata %>%
+
+    seurat_metadata <- seurat_metadata |>
       dplyr::mutate(
         Sample = if (length(filename_cols))
-          apply(dplyr::select(., dplyr::all_of(filename_cols)), 1, paste, collapse = "/")
+          apply(dplyr::select(seurat_metadata, dplyr::all_of(filename_cols)),
+                1, paste, collapse = "/")
         else
           rownames(seurat_metadata)
       )
 
-    # EXACTLY one row per file per assignment
     if ("proliferation" %in% colnames(seurat_metadata)) {
-      summary_tab <<- seurat_metadata %>%
-        dplyr::group_by(Sample, assignment, proliferation) %>%
-        dplyr::summarise(count = dplyr::n(), .groups = "drop") %>%
+      seurat_metadata |>
+        dplyr::group_by(Sample, assignment, proliferation) |>
+        dplyr::summarise(count = dplyr::n(), .groups = "drop") |>
         dplyr::arrange(Sample, assignment)
     } else {
-      summary_tab <<- seurat_metadata %>%
-        dplyr::group_by(Sample, assignment) %>%
-        dplyr::summarise(count = dplyr::n(), .groups = "drop") %>%
+      seurat_metadata |>
+        dplyr::group_by(Sample, assignment) |>
+        dplyr::summarise(count = dplyr::n(), .groups = "drop") |>
         dplyr::arrange(Sample, assignment)
     }
-
-    # Return the tidy summary (no join-back, no duplicates)
-    summary_tab
   })
 
-  output$plottreatment <- plotly::renderPlotly({
-    req(out_dat_reactive())
-    plotly::plot_ly(mtcars, x = ~wt, y = ~mpg, type = "scatter", mode = "markers")
+  output$tablecounts <- DT::renderDataTable({
+    req(summary_tab())
+    summary_tab()
   })
 
   ## Downloads
   output$downloadcounts <- downloadHandler(
-    filename = function() paste(Sys.Date(), "AutoFlow_counts.csv", sep = "_"),
+    filename = function() paste(Sys.Date(), "AutoFlow_longformat_counts.csv", sep = "_"),
     content = function(fname) {
-      req(summary_tab)
-      utils::write.csv(data.table::data.table(summary_tab), fname, row.names = FALSE)
+      req(summary_tab())
+      tab <- summary_tab() |>
+        dplyr::mutate(count = as.integer(count)) |>
+        dplyr::group_by(dplyr::across(-count)) |>
+        dplyr::summarise(count = sum(count), .groups = "drop")
+      utils::write.csv(data.table::data.table(tab), fname, row.names = FALSE)
     }
   )
 
   output$downloadcountsdelta <- downloadHandler(
-    filename = function() paste(Sys.Date(), "DeltaFlow_counts.csv", sep = "_"),
+    filename = function() paste(Sys.Date(), "AutoFlow_wideformat_counts.csv", sep = "_"),
     content = function(fname) {
-      req(out_dat_reactive(), summary_tab)
-      wide <- summary_tab %>%
-        dplyr::mutate(assignment = paste0(assignment, " Count"),
-               count = as.numeric(count),
-               assignment = as.character(assignment)) %>%
-        tidyr::pivot_wider(names_from = assignment, values_from = count, values_fill = list(count = 0))
+      req(out_dat_reactive(), summary_tab())
+
+      wide <- summary_tab() |>
+        dplyr::mutate(
+          assignment = paste0(as.character(assignment), " Count"),
+          count = as.numeric(count)
+        ) |>
+        tidyr::pivot_wider(
+          names_from  = assignment,
+          values_from = count,
+          values_fill = list(count = 0)
+        )
+
       utils::write.csv(wide, fname, row.names = FALSE)
     }
   )
-
+  observe({
+    shinyjs::toggleState(
+      "downloadprocessed",
+      condition = !is.null(proc_ff()) && length(proc_ff()) > 0
+    )
+  })
   # Export processed FCS
   output$downloadprocessed <- downloadHandler(
     filename = function() paste0(Sys.Date(), "_processed_fcs.zip"),
@@ -1190,6 +1202,13 @@ app_server <- function(input, output, session) {
       } else {
         utils::zip(zipfile, files = files)
       }
+    }
+  )
+  output$downloadseurat <- downloadHandler(
+    filename = function() paste0(Sys.Date(), "_AutoFlow_seurat.rds"),
+    content = function(file) {
+      req(out_dat_reactive())
+      saveRDS(out_dat_reactive(), file)
     }
   )
 }
