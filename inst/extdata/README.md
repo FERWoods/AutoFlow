@@ -74,18 +74,6 @@ The application extracts metadata from FCS files, using file paths for reference
    AutoFlow extracts basic metadata (file name/path) and carries it forward for summaries.
 
 
-## Automatic Data Processing
-
-If **Pre-process files = Yes**, AutoFlow performs:
-
-- **Compensation** using the file’s `SPILL`/`SPILLOVER` keyword.
-- **Logicle transformation** (biexponential) on compensated channels.
-- **QC with PeacoQC** (margin removal and quality filtering).
-- **Debris removal** GMM on FSC.A and SSC.A.
-- **Singlet clean-up** using the FSC.H ~ FSC.A relationship with RemoveDoublets() (PeacoQC).
-- **Viability filter** (if a “Viability” channel is present, performs a GMM on viability to fine +/- threshold. User can manually adjust this via interface.).
-- **Channel selection** (see below) and renaming to human-readable labels.
-
 If **Pre-process files = No**, AutoFlow still standardises channel names using the FCS `desc` where available (falling back to `name`), while leaving raw values intact.
 
 ## Channel Identification and Renaming
