@@ -12,7 +12,7 @@ app_server <- function(input, output, session) {
   ## Utilities/helpers
   `%||%` <- function(a, b) if (!is.null(a)) a else b
 
-  # Read parameter table
+  # Read parameter table from fcs file
   param_table <- function(ff) {
     pd <- flowCore::pData(flowCore::parameters(ff))
     data.frame(
@@ -43,7 +43,7 @@ app_server <- function(input, output, session) {
     chosen  <- vapply(desc_map, pick_desc, character(1))
     display <- ifelse(is.na(chosen) | !nzchar(chosen), union_names, chosen)
 
-    # disambiguate duplicate labels by appending [NAME]
+    # disambiguate duplicate labels by appending [NAME] (i.e. if raw file contains labels for fluorescent channels)
     dups <- duplicated(display) | duplicated(display, fromLast = TRUE)
     display[dups] <- paste0(display[dups], " [", union_names[dups], "]")
 
@@ -57,7 +57,7 @@ app_server <- function(input, output, session) {
   # for quick searches on strings later on
   canon <- function(x) gsub("[^a-z0-9]+", "", tolower(x))
 
-  # Debris detection: robust GMM (2D radial if A+H, else 1D; kmeans fallback)
+  # find forward scatter area and height channels
   .pick_fsc <- function(cn, which = c("A","H")) {
     which <- match.arg(which)
     pat <- if (which == "A") "^FSC[._-]?(A|Area)$" else "^FSC[._-]?(H|Height)$"
@@ -65,6 +65,8 @@ app_server <- function(input, output, session) {
     if (length(hit)) hit[1] else NA_character_
   }
 
+  # Debris detection: robust GMM (2D radial if A+H, else 1D; kmeans fallback)
+  # assumption here that debris = low FSC-H/A
   detect_debris_flags <- function(ff) {
     n <- nrow(ff@exprs); if (!n) return(integer(0))
     cn <- flowCore::colnames(ff)
@@ -80,6 +82,7 @@ app_server <- function(input, output, session) {
       if (sum(ok) < 50) return(integer(n))
       score[ok] <- log1p(sqrt(pmax(A[ok], 0)^2 + pmax(H[ok], 0)^2))
     } else {
+      # if only one channel found use that
       one <- if (!is.na(fsc_a)) fsc_a else if (!is.na(fsc_h)) fsc_h else NA
       if (is.na(one)) return(integer(n))
       x <- suppressWarnings(as.numeric(ff@exprs[, one]))
@@ -95,7 +98,7 @@ app_server <- function(input, output, session) {
     # Try Mclust 2 Gaussians
     flg_ok <- try({
       fit <- mclust::Mclust(s, G = 2, verbose = FALSE)
-      debris_comp <- which.min(fit$parameters$mean)
+      debris_comp <- which.min(fit$parameters$mean) # low FSC cluster
       as.integer(fit$classification == debris_comp)
     }, silent = TRUE)
 
@@ -146,7 +149,7 @@ app_server <- function(input, output, session) {
     pd_all <- flowCore::pData(flowCore::parameters(ff))
     desc_fb <- ifelse(!is.na(pd_all$desc) & nzchar(pd_all$desc), pd_all$desc, pd_all$name)
     pool    <- unique(c(desc_fb, pd_all$name))
-    vi_idx  <- grepl("viab|live|livedead", canon(pool))
+    vi_idx  <- grepl("viab|live|livedead", canon(pool)) # find viability channel
     vi_names<- intersect(pool[vi_idx], flowCore::colnames(ff))
     trans_channels <- unique(c(trans_channels, vi_names))
     trans_channels <- trans_channels[trans_channels %in% flowCore::colnames(ff)]
@@ -165,6 +168,35 @@ app_server <- function(input, output, session) {
     tryCatch(PeacoQC::RemoveMargins(ff, channels = 1:ncol(ff), save_fcs = FALSE, report = FALSE),
              error = function(e) ff)
   }
+
+  # Doublet removal using FSC-A vs FSC-H .
+  # Returns a subset flowFrame (keeps singlets). If channels are missing or it fails, returns input unchanged.
+  run_qc_remove_doublets <- function(ff, channelA = NULL, channelH = NULL) {
+    cn <- flowCore::colnames(ff)
+
+    # Prefer typical names if present; otherwise try to infer via .pick_fsc()
+    chA <- channelA %||% (.pick_fsc(cn, "A") %||% NA_character_)
+    chH <- channelH %||% (.pick_fsc(cn, "H") %||% NA_character_)
+
+    if (is.na(chA) || is.na(chH)) return(ff)
+    if (!(chA %in% cn) || !(chH %in% cn)) return(ff)
+
+    out <- tryCatch(
+      PeacoQC::RemoveDoublets(ff, channel1 = chA, channel2 = chH, output = "full"),
+      error = function(e) NULL
+    )
+    if (is.null(out)) return(ff)
+
+    # 'indices_doublets' are the event indices flagged as doublets
+    dbl <- out$indices_doublets
+    if (is.null(dbl) || !length(dbl)) return(ff)
+
+    keep <- setdiff(seq_len(nrow(ff@exprs)), dbl)
+    if (!length(keep)) return(ff)
+
+    ff[keep, ]
+  }
+
   run_qc_peacoqc <- function(ff, min_events = 5000) {
 
     n <- nrow(ff@exprs)
@@ -223,22 +255,35 @@ app_server <- function(input, output, session) {
     (x - r[1]) / (r[2] - r[1])
   }
 
+  # auto threshold for viability marker -- auto find pos neg populations and fit as two gaussians
+  # fall back to nothing if fails (<200 events, GMM fit failure, or component intersection can't be found)
   auto_threshold_gmm <- function(x) {
     x <- x[is.finite(x)]
-    if (length(x) < 200) return(median(x, na.rm = TRUE))
+    # Not enough data to infer a bimodal split
+    if (length(x) < 200)
+      return(NA_real_)
     m <- try(mclust::Mclust(x, G = 2), silent = TRUE)
-    if (inherits(m, "try-error")) return(median(x, na.rm = TRUE))
+    if (inherits(m, "try-error"))
+      return(NA_real_)
+    # Order components by increasing mean (low -> high)
     o  <- order(m$parameters$mean)
     mu <- m$parameters$mean[o]
     sd <- sqrt(m$parameters$variance$sigmasq)[o]
     pr <- m$parameters$pro[o]
+    # Weighted component densities
     f1 <- function(t) pr[1] * dnorm(t, mu[1], sd[1])
     f2 <- function(t) pr[2] * dnorm(t, mu[2], sd[2])
+    # Search within robust range (avoid outliers)
     rng <- range(quantile(x, c(0.001, 0.999), na.rm = TRUE))
-    ur  <- try(uniroot(function(t) f1(t) - f2(t), interval = rng)$root, silent = TRUE)
-    if (inherits(ur, "try-error")) median(x, na.rm = TRUE) else ur
+    ur <- try(
+      uniroot(function(t) f1(t) - f2(t), interval = rng)$root,
+      silent = TRUE
+    )
+    if (inherits(ur, "try-error")) NA_real_ else ur
   }
 
+  # for downstream -- add debris/viability/single-cell labels as columns to the original
+  # flowframe. Allows writing pre-processed to .fsc files.
   ff_with_extra_cols <- function(ff, extra_mat, extra_desc = NULL) {
     stopifnot(is.matrix(extra_mat) || is.data.frame(extra_mat))
     extra_mat <- as.matrix(extra_mat)
@@ -275,6 +320,7 @@ app_server <- function(input, output, session) {
     flowCore::flowFrame(exprs = new_expr, parameters = par2, description = kw)
   }
 
+  # helper for supervised - allow scaling test data with the bundled model info
   scale_with_bundle <- function(df_mat, means, sds) {
     stopifnot(all(names(means) %in% colnames(df_mat)), all(names(sds) %in% colnames(df_mat)))
     X <- as.matrix(df_mat[, names(means), drop = FALSE])
@@ -378,6 +424,7 @@ app_server <- function(input, output, session) {
     }
   })
 
+  # prep for reading in .fcs and initialise
   files_all <- reactive({
     if (is.integer(input$files)) return(NULL)
     paths <- shinyFiles::parseFilePaths(volumes, input$files)$datapath
@@ -440,19 +487,26 @@ app_server <- function(input, output, session) {
         if (is.null(out)) ff else out
       }, error = function(e) ff)
     }
+    safe_remove_doublets <- function(ff) {
+      tryCatch(run_qc_remove_doublets(ff), error = function(e) ff)
+    }
 
     # Apply stepwise per file; track debris counts but don't fail
     n_before   <- vapply(R, function(ff) nrow(ff@exprs), numeric(1))
     deb_counts <- numeric(length(R))
+    dbl_counts <- numeric(length(R))
 
     P <- lapply(seq_along(R), function(i){
       ff0 <- R[[i]]
       ff1 <- safe_RemoveMargins(ff0)
-      # debris detection (safe)
+      # debris detection
       dc  <- tryCatch(sum(detect_debris_flags(ff1) == 1L, na.rm = TRUE), error = function(e) 0)
       deb_counts[i] <<- dc
       ff2 <- safe_remove_debris(ff1)
-      ff3 <- safe_preprocess(ff2)
+      n2   <- nrow(ff2@exprs)
+      ff2b <- safe_remove_doublets(ff2)
+      dbl_counts[i] <<- max(0, n2 - nrow(ff2b@exprs))
+      ff3 <- safe_preprocess(ff2b)
       ff4 <- safe_PeacoQC(ff3)
       ff4
     })
@@ -478,6 +532,19 @@ app_server <- function(input, output, session) {
                                  format(sum(deb_counts)), pct),
                          type = "message", duration = 5)
       }
+      if (sum(dbl_counts) > 0) {
+        pct_dbl <- 100 * sum(dbl_counts) / sum(n_before)
+        for (i in seq_along(R)) {
+          if (dbl_counts[i] > 0) {
+            showNotification(sprintf("File %02d: removed %s doublets (%.2f%%).",
+                                     i, format(dbl_counts[i]), 100*dbl_counts[i]/n_before[i]),
+                             type = "message", duration = 4)
+          }
+        }
+        showNotification(sprintf("Total doublets removed: %s (%.2f%%).",
+                                 format(sum(dbl_counts)), pct_dbl),
+                         type = "message", duration = 5)
+      }
     }
 
     # Build maps & default viability from whatever we ended up with (processed OR raw)
@@ -497,7 +564,8 @@ app_server <- function(input, output, session) {
     auto_viab_thr_val(if (length(vv)) auto_threshold_gmm(vv) else 0.5)
   }, ignoreInit = TRUE)
 
-  ## Rebuild combined matrix
+  ## Rebuild combined matrix - allowed combine event-by-channel matrix from loaded flowframes
+  # harmonises channel names, remove duplicates within a file, row binds all event for one matrix + per event metadata
   rebuild_combined <- function() {
     CF <- use_ff(); req(CF)
 
@@ -506,6 +574,7 @@ app_server <- function(input, output, session) {
       cn <- colnames(m) %||% character(0)
       if (!length(cn)) cn else make.unique(cn, sep = "__dupcol")
     })
+    # Union schema across all files (allows combining files with different panels/derived cols)
     name_union <- Reduce(union, per_file_cols)
     if (!length(name_union)) stop("No columns found across files (name_union empty).")
 
@@ -515,6 +584,7 @@ app_server <- function(input, output, session) {
       if (!is.matrix(m)) m <- as.matrix(m)
       cn <- make.unique(colnames(m) %||% character(0), sep = "__dupcol")
       colnames(m) <- cn
+      # Add missing columns as NA so every file conforms to the same schema before row-binding
       miss <- setdiff(name_union, cn)
       if (length(miss)) {
         add <- matrix(NA_real_, nrow = nrow(m), ncol = length(miss))
@@ -545,7 +615,7 @@ app_server <- function(input, output, session) {
       data.table::rbindlist(meta_list, use.names = TRUE, fill = TRUE),
       check.names = FALSE, stringsAsFactors = FALSE
     )
-
+    # Each event gets a metadata row with its source file; must stay row-aligned with dat_comb
     if (nrow(dat_comb) != nrow(meta_comb)) {
       stop(sprintf("Row mismatch after bind: data=%d, meta=%d", nrow(dat_comb), nrow(meta_comb)))
     }
@@ -558,9 +628,10 @@ app_server <- function(input, output, session) {
     seurat_meta_comb(meta_comb)
     name_to_label(maps$name_to_label)
     label_to_name(maps$label_to_name)
+    # if input changed -> invalidate downstream objects so they are recomputed from the new combined matrix
     unsup_obj(NULL); supervised_obj(NULL)
   }
-
+  # Rebuild combined table whenever the active flowFrames change
   observeEvent(use_ff(), { rebuild_combined() })
 
   ## Sidebar UI
@@ -582,22 +653,23 @@ app_server <- function(input, output, session) {
                        choices = choices, selected = names(choices))
   })
 
-  ## Viability controls (robust to preproc status)
+  ## Viability
   output$viability_controls <- renderUI({
     req(files_all())
     ntl <- name_to_label(); req(ntl)
 
-    # choose a sensible starting threshold from whatever data we have
+    # choose a sensible starting threshold from whatever data we have, runs on render
     FF_use <- use_ff(); req(FF_use)
     start_thr <- {
       vv0 <- get_marker_vector(FF_use, default_viab_name() %||% names(ntl)[1])
-      if (length(vv0)) auto_threshold_gmm(vv0) else 0.5
+      thr0 <- if (length(vv0)) auto_threshold_gmm(vv0) else 0.5
+      if (!is.finite(thr0)) 0.5 else thr0
     }
     if (is.null(viab_thr_rv())) {
       viab_thr_rv(start_thr)
       viab_thr_src("auto")
     }
-
+    # for display in ui
     tagList(
       h4("Marker / Viability QC"),
       selectInput(
@@ -610,21 +682,23 @@ app_server <- function(input, output, session) {
         "viability_threshold",
         "Threshold (marker < threshold -> viable):",
         min = -1, max = 6,
-        value = round(viab_thr_rv() %||% start_thr, 3),
+        value = round(if (!is.finite(viab_thr_rv())) start_thr else viab_thr_rv(), 3),
         step = 0.001
       ),
+      # Force re-computation of an automatic threshold for the currently selected marker
       actionButton("recalc_auto_thr", "Auto-threshold"),
       tags$div(style="margin-top:6px;",
                tags$small(textOutput("viability_summary", inline = TRUE)))
     )
   })
+  # if the user moves the threshold use this, or recalc if they click auto-threshold
   observeEvent(viab_thr_deb(), {
     req(!is.null(viab_thr_deb()))
     viab_thr_rv(as.numeric(viab_thr_deb()))
     viab_thr_src("manual")
   }, ignoreInit = TRUE)
 
-
+  # Keep the marker selector synced to the app-wide default viability marker
   observeEvent(default_viab_name(), {
     req(default_viab_name(), name_to_label())
     updateSelectInput(session, "viability_marker_name",
@@ -632,25 +706,31 @@ app_server <- function(input, output, session) {
                       choices  = setNames(names(name_to_label()), name_to_label()))
   }, ignoreInit = TRUE)
 
+  # When the selected marker changes (or th flowFrames change),
+  # update the slider bounds to a robust range, and (optionally) recompute
+  # the auto-threshold if we are still in "auto" mode.
   observeEvent(list(input$viability_marker_name, use_ff()), {
     req(use_ff(), input$viability_marker_name)
     vv <- get_marker_vector(use_ff(), input$viability_marker_name)
     vv <- vv[is.finite(vv)]
     if (!length(vv)) return()
-
+    # Robust slider bounds (ignore extreme outliers)
     rng <- quantile(vv, c(0.001, 0.999), na.rm = TRUE)
     updateSliderInput(session, "viability_threshold",
                       min = round(rng[1], 3), max = round(rng[2], 3))
-
+    # Only auto-update threshold if:
+    #  it hasn't been set yet, or
+    # the current threshold came from automation (not a user override)
     if (is.null(viab_thr_rv()) || identical(viab_thr_src(), "auto")) {
-      thr <- auto_viab_thr_val() %||% auto_threshold_gmm(vv)  # only here
+      # Prefer cached auto threshold if available; otherwise compute from current marker values.
+      thr <- auto_viab_thr_val() %||% auto_threshold_gmm(vv)
       viab_thr_rv(thr)
       viab_thr_src("auto")
       updateSliderInput(session, "viability_threshold", value = round(thr, 3))
     }
   }, ignoreInit = TRUE)
 
-
+  # recalculate the autothresholding if button clicked
   observeEvent(input$recalc_auto_thr, {
     req(use_ff(), input$viability_marker_name)
     vv <- get_marker_vector(use_ff(), input$viability_marker_name)
@@ -667,12 +747,13 @@ app_server <- function(input, output, session) {
     showNotification(sprintf("Auto-threshold set to %.3f", thr), type = "message", duration = 3)
   })
 
-
+  # summary test for thresholding
   output$viability_summary <- renderText({
     req(use_ff(), input$viability_marker_name, !is.null(input$viability_threshold))
     vv <- get_marker_vector(use_ff(), input$viability_marker_name)
     vv <- vv[is.finite(vv)]
     if (!length(vv)) return("No values available for this marker.")
+    # Use stored threshold (single source of truth). Fall back to slider if needed.
     thr <- viab_thr_rv() %||% as.numeric(input$viability_threshold)
     pct_non_viable <- mean(vv >= thr, na.rm = TRUE) * 100
     total <- length(vv)
@@ -682,7 +763,15 @@ app_server <- function(input, output, session) {
             format(total))
   })
 
+  # Current viability settings to be used by downstream analysis (not just UI)
+  viability_settings <- reactive({
+    marker <- input$viability_marker_name %||% default_viab_name()
+    thr    <- viab_thr_rv()
+    list(marker = marker, thr = thr)
+  })
+
   ## Unsupervised
+  # allow marker density plots of chosed cluster, or pairs of clusters for visual comparison
   output$unsup_qc_controls <- renderUI({
     req(unsup_obj(), seurat_dat_comb(), label_to_name())
     asn <- sort(unique(as.character(unsup_obj()@meta.data$assignment)))
@@ -717,7 +806,7 @@ app_server <- function(input, output, session) {
 
     # Build the matrix that becomes Seurat counts (cells x features)
     X <- seurat_dat_comb()[, use_cols, drop = FALSE]
-    X <- apply(X, 2, norm_minmax)
+    X <- apply(X, 2, norm_minmax) # apply minmax per col to full dataset
 
     ntl <- name_to_label()
     disp_names <- ntl[use_cols]
@@ -744,7 +833,7 @@ app_server <- function(input, output, session) {
 
     # Store the original row ids we used to build this Seurat object
     seur@meta.data$autoflow_row_id <- row_ids
-
+    # run_unsup_fun is a helper taking the users inputs for res and logfold
     seur <- run_unsupervised_func(
       seur,
       res     = as.numeric(input$res_umap),
@@ -756,6 +845,7 @@ app_server <- function(input, output, session) {
   })
 
   ## Marker QC plots
+  # plot for viability qc (or any marker, user can choose)
   output$marker_qc <- plotly::renderPlotly({
     req(files_all())
     validate(need(!is.null(use_ff()), "Load data to view viability densities."))
@@ -768,9 +858,10 @@ app_server <- function(input, output, session) {
     d <- density(vv, n = 1024)
     ntl <- name_to_label() %||% c()
     desc_label <- ntl[[input$viability_marker_name]] %||% input$viability_marker_name
-
+    # Base density plot for the marker
     p <- plotly::plot_ly()
     p <- plotly::add_lines(p, x = d$x, y = d$y, name = paste0("Density: ", desc_label))
+    # Add vertical line for threshold
     p <- plotly::add_lines(p,
                            x = c(input$viability_threshold, input$viability_threshold),
                            y = c(0, max(d$y)),
@@ -791,6 +882,7 @@ app_server <- function(input, output, session) {
     }
   }
 
+  # render the unsup cluster expression plots
   output$unsup_marker_qc <- plotly::renderPlotly({
     req(unsup_obj(), seurat_dat_comb(), label_to_name())
 
@@ -828,7 +920,7 @@ app_server <- function(input, output, session) {
     mode <- input$unsup_compare %||% "one_vs_all"
     p <- plotly::plot_ly()
     n_layers <- 0L
-
+    # choice for pairs of single cluster plot
     if (mode == "pair") {
       req(input$unsup_assign_a, input$unsup_assign_b)
       keep <- df$assignment %in% c(input$unsup_assign_a, input$unsup_assign_b)
@@ -872,6 +964,7 @@ app_server <- function(input, output, session) {
     )
   })
 
+  # user uploads the model bundle RDS: read it in and extract the relevant info for later use (features, scaling, levels)
   observeEvent(input$model_file, {
     req(input$model_type == "Supervised", input$model_file$datapath)
     b <- tryCatch(readRDS(input$model_file$datapath), error = function(e) NULL)
@@ -892,16 +985,17 @@ app_server <- function(input, output, session) {
     }
   })
 
+  # map features from model bundle to columns in the uploaded dataset; allow user override if auto-mapping fails or is incomplete
   output$feature_mapper_ui <- renderUI({
     req(input$model_type == "Supervised", model_features(), !is.null(seurat_dat_comb()))
     feats <- model_features()
     current_map <- feature_map()
     choices <- colnames(seurat_dat_comb())
-
+    # If the current map is complete and matches the model features, show a success message instead of the mapping UI
     if (!is.null(current_map) && all(!is.na(current_map)) && identical(unname(current_map), feats)) {
       return(tags$p(HTML("<b>All model features were matched automatically.</b>")))
     }
-
+    # setup options for user to manually map each model feature to a dataset column; pre-populate with any existing mapping if available
     rows <- lapply(seq_along(feats), function(i) {
       mf <- feats[i]
       sel <- current_map[[mf]] %||% NA_character_
@@ -916,7 +1010,7 @@ app_server <- function(input, output, session) {
         ))
       )
     })
-
+    # Whenever any of the mapping inputs change, update the reactive feature_map with the current selections
     observe({
       req(length(feats) > 0)
       new_map <- setNames(rep(NA_character_, length(feats)), feats)
@@ -943,7 +1037,7 @@ app_server <- function(input, output, session) {
     req(model_features(), !is.null(seurat_dat_comb()))
     feature_map(auto_map_features(model_features(), colnames(seurat_dat_comb())))
   })
-
+  # summary of mapping status: how many features mapped, and which (if any) are missing
   output$mapping_summary <- renderUI({
     req(feature_map())
     fm <- feature_map(); n_ok <- sum(!is.na(fm) & nzchar(fm)); n_tot <- length(fm)
@@ -954,12 +1048,13 @@ app_server <- function(input, output, session) {
         tags$p(style = "color:#a94442;", paste("Missing mappings:", paste(missing, collapse = ", ")))
     )
   })
-
+  # run the supervised prediction using the uploaded model bundle and the mapped features from the combined dataset
+  # add results to the combined dataset and make a new Seurat object for downstream output
   observeEvent(input$runSupervised, {
     req(input$model_type == "Supervised")
     req(model_bundle(), model_features(), scaling_means(), scaling_sds())
     req(!is.null(seurat_dat_comb()), !is.null(seurat_meta_comb()))
-
+    # Check that all model features have a mapped dataset column, and that those columns exist in the combined dataset
     feats <- model_features()
     fm <- feature_map()
     if (is.null(fm) || any(is.na(fm) | !nzchar(fm))) {
@@ -968,17 +1063,19 @@ app_server <- function(input, output, session) {
     }
     missing <- names(fm)[is.na(fm) | !nzchar(fm)]
     validate(need(!length(missing), paste("Please map all features before running. Missing:", paste(missing, collapse = ", "))))
-
+    # Now that we have a complete mapping, check that the mapped columns actually exist in the combined dataset
     data_cols <- unname(fm[feats])
     validate(need(all(data_cols %in% colnames(seurat_dat_comb())), "Mapped columns not found in uploaded data."))
-
+    # Build the feature matrix for prediction (cells x features), applying the user-provided mapping to get from model features to dataset columns
     pred_df <- seurat_dat_comb()[, data_cols, drop = FALSE]
     colnames(pred_df) <- feats
+    # Apply the scaling from the model bundle to the feature matrix (using the mapped columns from the combined dataset)
     Xs <- scale_with_bundle(pred_df, means = scaling_means(), sds = scaling_sds())
 
     b <- model_bundle()
     yhat <- NULL; probs <- NULL
-
+    # Try to predict using $model if available; otherwise fall back to $caret_fit.
+    # Handle different prediction output formats for ranger vs randomForest, and factor vs numeric predictions.
     if (!is.null(b$model)) {
       if (inherits(b$model, "ranger")) {
         pr <- predict(b$model, data = as.data.frame(Xs))
@@ -1022,7 +1119,7 @@ app_server <- function(input, output, session) {
       }
     }
     seurat_dat_comb(dat)
-
+    # todo update naming convention so not seurat for supervised
     cm <- t(as.matrix(pred_df))
     stopifnot(ncol(cm) == nrow(seurat_meta_comb()))
     colnames(cm) <- rownames(seurat_meta_comb())
@@ -1041,7 +1138,7 @@ app_server <- function(input, output, session) {
       req(unsup_obj()); unsup_obj()
     }
   })
-
+  # UMAP plot if available, otherwise bar plot of cluster counts; color by cluster/assignment
   output$plotdata <- plotly::renderPlotly({
     req(out_dat_reactive())
     out_dat <- out_dat_reactive()
@@ -1070,6 +1167,7 @@ app_server <- function(input, output, session) {
     }
   })
 
+  # setup summary tables for output and downloads; group by cluster/assignment and proliferation if available, count number of cells in each group
   summary_tab <- reactive({
     req(out_dat_reactive())
     out_dat <- out_dat_reactive()

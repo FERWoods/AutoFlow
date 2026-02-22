@@ -57,12 +57,13 @@ Click "Select FCS Files".
 Choose one or more FCS files.
 The application extracts metadata from FCS files, using file paths for reference.
 
-## Automatic Data Processing (Optional)
+## Automatic Data Processing (Optional, Experimental)
+*Experimental: this pipeline is provided for convenience and may not be robust across all panels or instruments. Users are encouraged to validate QC and gating behaviour on their own datasets.*
 - Single Cell Identification: RemoveDoublets() via PeacoQC.
-- Compensation: Uses "SPILLOVER" matrix for compensation.
+- Compensation: Uses spillover matrix for compensation (if not already applied).
 - Logicle Transformation: Manages negative values and dynamic range.
 - Quality Control with PeacoQC: Removes low-quality events.
-- Debris Removal: Uses Gaussian mixture model (GMM via Mclust).
+- Debris Removal: Uses Gaussian mixture model (GMM via Mclust), with k-means fallback.
 - Viability Identification: Threshold generated using GMM on Live/Dead marker, with user option to tune.
 - Channel Identification and Renaming
 - Renames channels by extracting descriptions from flow cytometry files.
