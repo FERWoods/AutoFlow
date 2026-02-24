@@ -14,8 +14,8 @@ suppressWarnings({ ok <- requireNamespace("data.table", quietly = TRUE) })
 set.seed(123)
 
 ##Paths
-root_dir <- "~/OneDrive - Swansea University/Documents/AutoFlow/data/BM-MPS/"
-outdir   <- "~/OneDrive - Swansea University/Documents/AutoFlow/outputs_bmmps"
+root_dir <- "BM-MPS/"
+outdir   <- "outputs_bmmps"
 dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
 
 # Hold out this day for testing (character, e.g. "28")
