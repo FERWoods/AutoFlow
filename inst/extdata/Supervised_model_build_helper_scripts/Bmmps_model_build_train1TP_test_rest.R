@@ -1,4 +1,4 @@
-## Setup
+## ============================== Setup ======================================
 suppressPackageStartupMessages({
   library(flowCore)
   library(Biobase)     # for AnnotatedDataFrame
@@ -13,13 +13,13 @@ suppressWarnings({ ok <- requireNamespace("data.table", quietly = TRUE) })
 `%||%` <- function(a,b) if (!is.null(a)) a else b
 set.seed(123)
 
-##Paths
-root_dir <- "BM-MPS/"
+## ========================== Paths / Patterns ===============================
+root_dir <- "BM-MPS/"  # <- adjust
 outdir   <- "outputs_bmmps"
 dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
 
-# Hold out this day for testing (character, e.g. "28")
-test_day <- "28"
+# Train ONLY on this day (character), test on everything else
+train_day <- "14"
 
 # Expected layout per day:
 #   1_FCS_combined_D{DAY}.FCS ... 5_FCS_combined_D{DAY}.FCS
@@ -33,9 +33,9 @@ all_csv <- list.files(root_dir, pattern = "^Gating_Matrix_D\\d+\\.csv$", ignore.
 fcs_by_day <- split(all_fcs, sapply(all_fcs, get_day))
 csv_by_day <- split(all_csv, sapply(all_csv, get_day))
 days <- mixedsort(intersect(names(fcs_by_day), names(csv_by_day)))
-stopifnot(length(days) > 0, test_day %in% days)
+stopifnot(length(days) > 0, train_day %in% days)
 
-##Robust reader for gating matrices
+## ========== Robust reader for gating matrices (encoding/delimiter) =========
 read_gating_file <- function(path) {
   if (ok) {
     df <- try(data.table::fread(path, data.table = FALSE, showProgress = FALSE), silent = TRUE)
@@ -69,21 +69,15 @@ read_gating_file <- function(path) {
   df
 }
 
-## Gate resolution + coercion helpers
+## ====================== Gate resolution + coercion helpers =================
 .canon <- function(x) tolower(gsub("[^a-z0-9]+", "", x))
 
 resolve_col <- function(gdf, key) {
-  # exact case-insensitive first
   hit_exact <- which(tolower(colnames(gdf)) == tolower(key))
   if (length(hit_exact) == 1) return(colnames(gdf)[hit_exact])
-
-  # canonical exact
   can_key  <- .canon(key); can_cols <- .canon(colnames(gdf))
   hit <- match(can_key, can_cols); if (!is.na(hit)) return(colnames(gdf)[hit])
-
-  # canonical contains (unique)
   cand <- grep(can_key, can_cols, fixed = TRUE); if (length(cand) == 1) return(colnames(gdf)[cand])
-
   NA_character_
 }
 
@@ -108,7 +102,6 @@ pick_viability <- function(gdf) {
   col_nv <- resolve_col(gdf, "Non Viable Cells")
   if (!is.na(col_v))  return(to_logi(gdf[[col_v]]))
   if (!is.na(col_nv)) return(!to_logi(gdf[[col_nv]]))
-  # heuristic fallback
   cols <- colnames(gdf); can <- .canon(cols)
   pats <- c("viable","viability","live","dead","7aad","amine","dapi","dump")
   hits <- unique(unlist(lapply(pats, function(p) which(grepl(p, can)))))
@@ -135,7 +128,7 @@ pick_singlets <- function(gdf) {
   best
 }
 
-## EXACT gating logic + precedence -- aligns with experimental defs
+## =================== EXACT gating logic + precedence (your recipe) =========
 mk_labels_one_day <- function(gdf) {
   sc  <- ifelse(gget(gdf, "Single Cells"), 1L, 0L)
   vc  <- ifelse(gget(gdf, "Viable Cells"), 1L, 0L)
@@ -168,7 +161,6 @@ mk_labels_one_day <- function(gdf) {
 
   ldp <- ifelse(gget(gdf, "CD34+ CD38+ Lineage Differentiated Progenitors"), 1L, 0L)
 
-  # precedence
   out <- ifelse(vc == 0L, "non-viable",
                 ifelse(sc == 0L, "debris/doublet",
                        ifelse(lm == 1L, "Late Monocytes",
@@ -179,15 +171,13 @@ mk_labels_one_day <- function(gdf) {
                                                           ifelse(mgk== 1L, "Megakaryocytes",
                                                                  ifelse(hsc== 1L, "HSCs",
                                                                         ifelse(ldp== 1L, "Progenitors", "Unknown"))))))))))
-
-  # factor with meaningful level order (precedence on top, then others)
   lvl_order <- c("non-viable","debris/doublet",
                  "Late Monocytes","Late Granulocytes","Early Granulocytes",
                  "Early Erythroid","Later Erythroid","Megakaryocytes","HSCs","Progenitors","Unknown")
   factor(out, levels = lvl_order)
 }
 
-## Read FCS and build per-day data
+## ===================== Read FCS and build per-day data =====================
 read_day_flowframes <- list()
 day_exprs <- list()
 row_ranges <- list()
@@ -214,7 +204,7 @@ for (d in days) {
   rep_vec_by_day[[d]] <- rv
 }
 
-#Read gating CSVs
+## ============================ Read gating CSVs =============================
 gating_by_day <- lapply(days, function(d) read_gating_file(csv_by_day[[d]][1]))
 names(gating_by_day) <- days
 
@@ -233,7 +223,7 @@ for (d in days) {
   }
 }
 
-#Decide channels (desc; Comp-* -A; no Live/Dead
+## =================== Decide channels (desc; Comp-* -A; no Live/Dead) ======
 template_ff <- read_day_flowframes[[days[1]]][[1]]
 par_tbl <- pData(parameters(template_ff))
 
@@ -242,22 +232,21 @@ is_comp   <- grepl("^Comp", par_tbl$name)
 desc_txt  <- ifelse(is.na(par_tbl$desc), par_tbl$name, par_tbl$desc)
 can_desc  <- .canon(desc_txt)
 
-# Exclude only viability / live-dead; KEEP EdU
-is_viab   <- can_desc %in% c("viability","livedead","live","livedeaddye", "VIABILITY", "EdU")
+# Exclude ONLY viability / live-dead; KEEP EdU
+is_viab <- can_desc %in% c("viability","livedead","live")
 
 keep_idx  <- which(is_area & is_comp & !is_viab)
 stopifnot(length(keep_idx) > 0)
 
-selected_names <- par_tbl$name[keep_idx]                       # raw matrix column names
-selected_desc  <- make.names(desc_txt[keep_idx], unique = TRUE) # desc labels as new names
+selected_names <- par_tbl$name[keep_idx]                        # raw matrix column names
+selected_desc  <- make.names(desc_txt[keep_idx], unique = TRUE)  # desc labels as new names
 names(selected_desc) <- selected_names
 
-#Combine days with desired channels
+## ==================== Combine days with desired channels ===================
 dfs_by_day <- lapply(days, function(d) {
   X <- day_exprs[[d]][, selected_names, drop = FALSE]
   X <- as.data.frame(X)
-  # rename to DESC names for modeling
-  colnames(X) <- unname(selected_desc[colnames(X)])
+  colnames(X) <- unname(selected_desc[colnames(X)])  # rename to DESC
 
   X$label <- mk_labels_one_day(gating_by_day[[d]])
   X$.day  <- d
@@ -276,14 +265,14 @@ df_filt <- df_all[!(df_all$label %in% drop_labels), , drop = FALSE]
 if (nrow(df_filt) < 100) df_filt <- df_all
 df_filt$label <- droplevels(df_filt$label)
 
-#Leave-one-day-out split
-test_df  <- df_filt[df_filt$.day == test_day, , drop = FALSE]
-train_df <- df_filt[df_filt$.day != test_day, , drop = FALSE]
-stopifnot(nrow(test_df) > 0, nrow(train_df) > 0)
+## ==================== Train-on-Day14 / Test-on-Others ======================
+train_df <- df_filt[df_filt$.day == train_day, , drop = FALSE]
+test_df  <- df_filt[df_filt$.day != train_day, , drop = FALSE]
+stopifnot(nrow(train_df) > 0, nrow(test_df) > 0)
 
 feature_names <- setdiff(colnames(train_df), c("label",".day",".rep",".row"))
 
-#Scaling on training set
+## ============================ Scaling (train only) =========================
 mu  <- sapply(train_df[, feature_names, drop = FALSE], mean, na.rm = TRUE)
 sds <- sapply(train_df[, feature_names, drop = FALSE], sd,   na.rm = TRUE)
 sds[is.na(sds) | sds == 0] <- 1
@@ -297,7 +286,7 @@ scale_df <- function(X, mu, sds) {
 train_scaled <- train_df; train_scaled[, feature_names] <- scale_df(train_df[, feature_names, drop = FALSE], mu, sds)
 test_scaled  <- test_df;  test_scaled[,  feature_names] <- scale_df(test_df[,  feature_names, drop = FALSE], mu, sds)
 
-#Train & Evaluate
+## ============================ Train & Evaluate =============================
 ctrl <- caret::trainControl(
   method = "repeatedcv", number = 3, repeats = 1,
   classProbs = FALSE, summaryFunction = defaultSummary,
@@ -320,7 +309,7 @@ print(fit$bestTune)
 pred_test <- predict(fit, newdata = test_scaled[, feature_names, drop = FALSE])
 print(caret::confusionMatrix(pred_test, droplevels(test_scaled$label)))
 
-#Final refit + model bundle
+## ------------------------- Final refit + model bundle ----------------------
 best <- fit$bestTune
 tbl <- table(train_scaled$label)
 wts <- as.numeric(1 / tbl); names(wts) <- names(tbl)
@@ -342,11 +331,11 @@ final_fit <- ranger::ranger(
 bundle <- list(
   model    = final_fit,
   features = feature_names,                 # DESC-named features used by the model
-  scaling  = list(means = mu, sds = sds),   # z-score params from TRAIN only
+  scaling  = list(means = mu, sds = sds),   # z-score params from TRAIN only (Day 14)
   levels   = levels(train_scaled$label),    # class level order
   meta     = list(
     dataset           = "BM-MPS Controls (multiclass)",
-    test_day          = test_day,
+    train_day         = train_day,
     model             = "ranger",
     splitrule         = if (!is.null(best$splitrule)) best$splitrule else "gini",
     mtry              = if (!is.null(best$mtry)) best$mtry else NA_integer_,
@@ -355,19 +344,18 @@ bundle <- list(
     sample.fraction   = 0.8,
     class.weights     = wts,
     zscale            = TRUE,
-    features_are_desc = TRUE,               # channels renamed to 'desc' before modeling
+    features_are_desc = TRUE,
     created           = Sys.time()
   )
 )
 
-saveRDS(bundle, file.path(outdir, sprintf("bmmps_ranger_bundle_LODO_D%s.rds", test_day)))
+saveRDS(bundle, file.path(outdir, sprintf("bmmps_ranger_bundle_trainD%s_testOthers.rds", train_day)))
 cat("Saved model bundle to: ",
-    file.path(outdir, sprintf("bmmps_ranger_bundle_LODO_D%s.rds", test_day)), "\n", sep = "")
+    file.path(outdir, sprintf("bmmps_ranger_bundle_trainD%s_testOthers.rds", train_day)), "\n", sep = "")
 
-# Write combined TRAIN/TEST FCS
+## ======================= Write combined TRAIN/TEST FCS =====================
 # Build parameter data with DESC names and append numeric meta channels.
 
-# Build selected parameter set (renamed to DESC)
 template_par <- pData(parameters(template_ff))
 pdat <- template_par[keep_idx, , drop = FALSE]
 pdat$name <- unname(selected_desc)                 # channel names = DESC
@@ -419,14 +407,14 @@ test_common  <- test_df[,  c(ord_cols, "label",".day",".rep",".row")]
 ff_train <- make_combined_ff(train_common, par_selected)
 ff_test  <- make_combined_ff(test_common,  par_selected)
 
-write.FCS(ff_train, file.path(outdir, sprintf("BM_MPS_TRAIN_Dnot%s.fcs", test_day)))
-write.FCS(ff_test,  file.path(outdir, sprintf("BM_MPS_TEST_D%s.fcs",    test_day)))
+write.FCS(ff_train, file.path(outdir, sprintf("BM_MPS_TRAIN_D%s.fcs", train_day)))
+write.FCS(ff_test,  file.path(outdir, sprintf("BM_MPS_TEST_Dnot%s.fcs", train_day)))
 
 cat("Wrote combined FCS (channels = DESC names + meta):\n",
-    file.path(outdir, sprintf("BM_MPS_TRAIN_Dnot%s.fcs", test_day)), "\n",
-    file.path(outdir, sprintf("BM_MPS_TEST_D%s.fcs",    test_day)), "\n", sep = "")
+    file.path(outdir, sprintf("BM_MPS_TRAIN_D%s.fcs", train_day)), "\n",
+    file.path(outdir, sprintf("BM_MPS_TEST_Dnot%s.fcs", train_day)), "\n", sep = "")
 
-# Optional sanity summaries
+## ======================= Optional sanity summaries =========================
 for (d in days) {
   cat(sprintf("Day %s label distribution (%%):\n", d))
   print(round(100 * prop.table(table(mk_labels_one_day(gating_by_day[[d]]))), 2))
