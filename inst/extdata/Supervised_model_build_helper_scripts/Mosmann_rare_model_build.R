@@ -11,8 +11,8 @@ set.seed(123)
 
 # Load + prep data
 # Paths
-dir    <- "~/OneDrive - Swansea University/Documents/AutoFlow/data/benchmarking/"
-outdir <- "~/OneDrive - Swansea University/Documents/AutoFlow/outputs"
+dir    <- "benchmarking/"
+outdir <- "outputs"
 if (!dir.exists(outdir)) dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
 
 # Load FCS (no transformation)
