@@ -7,6 +7,6 @@
 # * https://testthat.r-lib.org/articles/special-files.html
 
 library(testthat)
-library(autoflow)
+library(AutoFlow)
 
-test_check("autoflow")
+test_check("AutoFlow")

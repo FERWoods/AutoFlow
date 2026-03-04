@@ -134,7 +134,7 @@ app_ui <- function(request) {
 
           tabPanel(
             "Welcome",
-            includeMarkdown(system.file("extdata", "README.md", package = "autoflow"))
+            includeMarkdown(system.file("extdata", "README.md", package = "AutoFlow"))
           ),
 
           # Marker QC tab appears whenever preprocessing is enabled

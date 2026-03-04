@@ -41,7 +41,7 @@ test_that("ff_add_cols_safe produces a structurally valid flowFrame", {
     check.names = FALSE
   )
 
-  ff2 <- autoflow:::ff_add_cols_safe(ff, add)
+  ff2 <- AutoFlow:::ff_add_cols_safe(ff, add)
 
   expr2 <- flowCore::exprs(ff2)
   pd2   <- flowCore::pData(flowCore::parameters(ff2))
@@ -89,7 +89,7 @@ test_that("augmented flowFrame writes and reads correctly", {
     check.names = FALSE
   )
 
-  ff2 <- autoflow:::ff_add_cols_safe(ff, add)
+  ff2 <- AutoFlow:::ff_add_cols_safe(ff, add)
 
   tf <- tempfile(fileext = ".fcs")
 
@@ -137,7 +137,7 @@ test_that("ff_add_cols_safe survives stale $Pn keywords (real-world FCS)", {
 
   add <- data.frame(Flag1 = sample(0:1, n, TRUE), check.names = FALSE)
 
-  ff2 <- autoflow:::ff_add_cols_safe(ff, add)
+  ff2 <- AutoFlow:::ff_add_cols_safe(ff, add)
 
   tf <- tempfile(fileext = ".fcs")
   expect_error(flowCore::write.FCS(ff2, tf), NA)

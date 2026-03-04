@@ -1,4 +1,4 @@
-Package: autoflow
+Package: AutoFlow
 Title: Autogating for flow cytometry data
 Version: 1.1.0
 Authors@R: 

@@ -42,8 +42,16 @@ detect_debris_flags <- function(ff) {
   s_ok <- is.finite(score)
   s    <- score[s_ok]
   if (length(s) < 50) return(integer(n))
-
+  # force namespace load
+  loadNamespace("mclust")
   # Try Mclust 2 Gaussians
+  if (!requireNamespace("mclust", quietly = TRUE)) {
+    stop("Package 'mclust' is required.")
+  }
+
+  # Make mclustBIC visible in THIS frame in case Mclust evals in parent.frame()
+  mclustBIC <- mclust::mclustBIC
+
   flg_ok <- try({
     fit <- mclust::Mclust(s, G = 2, verbose = FALSE)
     debris_comp <- which.min(fit$parameters$mean) # low FSC cluster

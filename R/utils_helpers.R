@@ -11,7 +11,7 @@
 # Helps when matching channel names or markers.
 #' @param x Character vector
 #' @return Canonicalised character vector
-#' @noRdß
+#' @noRd
 canon <- function(x) {
   gsub("[^a-z0-9]+", "", tolower(x))
 }

@@ -15,7 +15,6 @@
 #'   ordered to match `names(means)`. Values are scaled as:
 #'   \deqn{(x - mean) / sd}.
 #'
-#' @examples
 #' @noRd
 scale_with_bundle <- function(df_mat, means, sds) {
   stopifnot(all(names(means) %in% colnames(df_mat)), all(names(sds) %in% colnames(df_mat)))

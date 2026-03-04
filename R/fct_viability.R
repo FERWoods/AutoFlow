@@ -59,8 +59,16 @@ norm_minmax <- function(x) {
 #'   or `NA_real_` if a robust threshold cannot be found.
 #' @noRd
 auto_threshold_gmm <- function(x) {
+  # force namespace load
+  loadNamespace("mclust")
   x <- x[is.finite(x)]
   if (length(x) < 200) return(NA_real_)
+  if (!requireNamespace("mclust", quietly = TRUE)) {
+    stop("Package 'mclust' is required.")
+  }
+
+  # Make mclustBIC visible in THIS frame in case Mclust evals in parent.frame()
+  mclustBIC <- mclust::mclustBIC
 
   m <- try(mclust::Mclust(x, G = 2, verbose = FALSE), silent = TRUE)
   if (inherits(m, "try-error")) return(NA_real_)

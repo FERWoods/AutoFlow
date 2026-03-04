@@ -1,11 +1,49 @@
-#' @param max_umap_train Integer or NULL. If set (e.g. 100000), UMAP and clustering are trained
-#'   on a random subset of at most this many cells. Remaining cells are projected into the learned
-#'   UMAP model and assigned `seurat_clusters` / `assignment` via kNN in PCA space.
-#' @param seed Integer; RNG seed used for subsampling when `max_umap_train` is set.
-#' @param k_transfer Integer; number of nearest neighbours used for label transfer.
-#' @param min_transfer_conf Numeric in [0,1]. If set, query cells with confidence below this
-#'   are labelled `low_conf_label`.
-#' @param low_conf_label Character label used when confidence < `min_transfer_conf`.
+#' Unsupervised clustering + UMAP with optional fast subsampling and kNN transfer
+#'
+#' Runs an unsupervised Seurat workflow (Normalize → HVGs → Scale → PCA → UMAP → clustering)
+#' and assigns human-readable cluster labels (`assignment`) using marker strings when possible.
+#'
+#' If `max_umap_train` is set and the dataset is larger than this value, a fast mode is used:
+#' UMAP and clustering are trained on a random subset of cells, the learned UMAP model is
+#' projected to all remaining cells, and `seurat_clusters` / `assignment` for the remaining
+#' cells are transferred by k-nearest neighbours (kNN) in PCA space.
+#'
+#' @param flow_data A Seurat object (cells as columns) containing per-cell expression/features.
+#' @param res Numeric. Clustering resolution passed to `Seurat::FindClusters()`.
+#' @param logfold Numeric. Log-fold-change threshold passed to `Seurat::FindAllMarkers()`.
+#' @param percentage_cells Numeric in [0,1]. Minimum fraction of cells expressing a feature
+#'   used by `Seurat::FindAllMarkers()` (`min.pct`).
+#' @param batch_correct Logical. Reserved for future use (currently not applied).
+#' @param max_umap_train Integer or NULL. If NULL, run the full workflow on all cells.
+#'   If set (e.g. `100000`) and `ncol(flow_data) > max_umap_train`, UMAP + clustering are trained
+#'   on a random subset of size `max_umap_train`. The UMAP model is then projected to all cells
+#'   via `Seurat::ProjectUMAP()`, and labels for non-training cells are assigned using kNN in
+#'   PCA space (see `k_transfer`).
+#' @param seed Integer. RNG seed used for subsampling when `max_umap_train` triggers fast mode.
+#' @param k_transfer Integer. Number of nearest neighbours used for kNN label transfer from
+#'   training cells to query cells in PCA space.
+#' @param min_transfer_conf Numeric in [0,1] or NULL. If set, query cells with
+#'   `assignment_conf < min_transfer_conf` are labelled as `low_conf_label`.
+#' @param low_conf_label Character. Label used for low-confidence transferred assignments.
+#'
+#' @details
+#' The returned object contains:
+#' \itemize{
+#'   \item A UMAP reduction named `"umap"` (3 components are requested; if fewer are available,
+#'         the reduction will contain fewer dimensions).
+#'   \item `meta.data$seurat_clusters` (cluster IDs as character).
+#'   \item `meta.data$assignment` (marker-string label if marker assignment is successful,
+#'         otherwise falls back to cluster IDs).
+#'   \item `meta.data$assignment_conf` (confidence score in [0,1] for query cells in fast mode,
+#'         defined as the fraction of kNN votes supporting the assigned label; training cells
+#'         are set to 1).
+#' }
+#'
+#' Marker-based assignment requires at least two clusters; if only one cluster is detected,
+#' marker discovery and marker-string assignment are skipped with a warning.
+#'
+#' @return A Seurat object with UMAP, clustering, and per-cell labels stored in `meta.data`.
+#' @export
 run_unsupervised_func <- function(flow_data,
                                   res = 0.5,
                                   logfold = 0.25,
