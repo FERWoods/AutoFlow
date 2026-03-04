@@ -9,377 +9,6 @@
 #' @noRd
 app_server <- function(input, output, session) {
 
-  ## Utilities/helpers
-  `%||%` <- function(a, b) if (!is.null(a)) a else b
-
-  # Read parameter table from fcs file
-  param_table <- function(ff) {
-    pd <- flowCore::pData(flowCore::parameters(ff))
-    data.frame(
-      name = as.character(pd$name),
-      desc = {x <- as.character(pd$desc); x[is.na(x)] <- ""; x},
-      stringsAsFactors = FALSE
-    )
-  }
-
-  # Build NAME -> DESC maps across a list of frames (merge by NAME, label by majority DESC)
-  build_name_label_maps <- function(frames) {
-    tabs <- lapply(frames, param_table)
-    union_names <- Reduce(union, lapply(tabs, `[[`, "name"))
-
-    # collect candidate descs per name across files
-    desc_map <- lapply(union_names, function(nm) {
-      v <- unlist(lapply(tabs, function(tb) tb$desc[tb$name == nm]), use.names = FALSE)
-      v[!is.na(v) & nzchar(v)]
-    })
-    names(desc_map) <- union_names
-
-    # majority label (case-insensitive), fallback to name
-    pick_desc <- function(v) {
-      if (!length(v)) return(NA_character_)
-      key <- tolower(v)
-      v[ match(names(sort(table(key), decreasing = TRUE))[1], key) ]
-    }
-    chosen  <- vapply(desc_map, pick_desc, character(1))
-    display <- ifelse(is.na(chosen) | !nzchar(chosen), union_names, chosen)
-
-    # disambiguate duplicate labels by appending [NAME] (i.e. if raw file contains labels for fluorescent channels)
-    dups <- duplicated(display) | duplicated(display, fromLast = TRUE)
-    display[dups] <- paste0(display[dups], " [", union_names[dups], "]")
-
-    list(
-      union_names   = union_names,
-      name_to_label = setNames(display, union_names),
-      label_to_name = setNames(union_names, display)
-    )
-  }
-
-  # for quick searches on strings later on
-  canon <- function(x) gsub("[^a-z0-9]+", "", tolower(x))
-
-  # find forward scatter area and height channels
-  .pick_fsc <- function(cn, which = c("A","H")) {
-    which <- match.arg(which)
-    pat <- if (which == "A") "^FSC[._-]?(A|Area)$" else "^FSC[._-]?(H|Height)$"
-    hit <- cn[grepl(pat, cn, ignore.case = TRUE)]
-    if (length(hit)) hit[1] else NA_character_
-  }
-
-  # Debris detection: robust GMM (2D radial if A+H, else 1D; kmeans fallback)
-  # assumption here that debris = low FSC-H/A
-  detect_debris_flags <- function(ff) {
-    n <- nrow(ff@exprs); if (!n) return(integer(0))
-    cn <- flowCore::colnames(ff)
-    fsc_a <- .pick_fsc(cn, "A")
-    fsc_h <- .pick_fsc(cn, "H")
-
-    # build scalar to cluster on
-    score <- rep(NA_real_, n)
-    if (!is.na(fsc_a) && !is.na(fsc_h)) {
-      A <- suppressWarnings(as.numeric(ff@exprs[, fsc_a]))
-      H <- suppressWarnings(as.numeric(ff@exprs[, fsc_h]))
-      ok <- is.finite(A) & is.finite(H)
-      if (sum(ok) < 50) return(integer(n))
-      score[ok] <- log1p(sqrt(pmax(A[ok], 0)^2 + pmax(H[ok], 0)^2))
-    } else {
-      # if only one channel found use that
-      one <- if (!is.na(fsc_a)) fsc_a else if (!is.na(fsc_h)) fsc_h else NA
-      if (is.na(one)) return(integer(n))
-      x <- suppressWarnings(as.numeric(ff@exprs[, one]))
-      ok <- is.finite(x)
-      if (sum(ok) < 50) return(integer(n))
-      score[ok] <- log1p(pmax(x[ok], 0))
-    }
-
-    s_ok <- is.finite(score)
-    s    <- score[s_ok]
-    if (length(s) < 50) return(integer(n))
-
-    # Try Mclust 2 Gaussians
-    flg_ok <- try({
-      fit <- mclust::Mclust(s, G = 2, verbose = FALSE)
-      debris_comp <- which.min(fit$parameters$mean) # low FSC cluster
-      as.integer(fit$classification == debris_comp)
-    }, silent = TRUE)
-
-    if (inherits(flg_ok, "try-error")) {
-      # Fallback: kmeans (k=2) on scalar
-      km <- stats::kmeans(s, centers = 2, iter.max = 50)
-      cmeans <- tapply(s, km$cluster, mean)
-      debris_label <- as.integer(names(which.min(cmeans)))
-      flg_ok <- as.integer(km$cluster == debris_label)
-    }
-
-    flg <- integer(n)
-    flg[s_ok] <- flg_ok
-    # 1 = debris, 0 = keep
-    flg
-  }
-
-  remove_debris_if_any <- function(ff) {
-    flg <- detect_debris_flags(ff)
-    if (!length(flg) || !any(flg == 1L)) return(ff)
-    ff[which(flg == 0L), ]
-  }
-
-  # Robust preprocessing (comp if spill exists & not already comped; logicle on fluoresc.)
-  preprocess_robust <- function(ff) {
-    pd <- flowCore::pData(flowCore::parameters(ff))
-    nm <- as.character(pd$name)
-    already_comp <- any(grepl("^Comp", nm, ignore.case = TRUE))
-
-    kw <- flowCore::keyword(ff)
-    spill <- kw[["SPILL"]] %||% kw[["$SPILLOVER"]] %||% kw[["spillover"]] %||% NULL
-    spill_ok <- is.matrix(spill) && length(colnames(spill)) > 1
-
-    if (!already_comp && spill_ok) {
-      common <- intersect(colnames(spill), flowCore::colnames(ff))
-      if (length(common) > 1) {
-        spill_use <- spill[common, common, drop = FALSE]
-        ff <- tryCatch(flowCore::compensate(ff, spill_use), error = function(e) ff)
-      }
-    }
-
-    # choose channels for logicle (fluorescence + viability-like even if not in spill)
-    is_fsc_ssc <- grepl("^(FSC|SSC)", nm, ignore.case = TRUE)
-    is_time    <- grepl("^Time$", nm,  ignore.case = TRUE)
-    trans_channels <- if (spill_ok) intersect(colnames(spill), flowCore::colnames(ff))
-    else flowCore::colnames(ff)[!(is_fsc_ssc | is_time)]
-
-    pd_all <- flowCore::pData(flowCore::parameters(ff))
-    desc_fb <- ifelse(!is.na(pd_all$desc) & nzchar(pd_all$desc), pd_all$desc, pd_all$name)
-    pool    <- unique(c(desc_fb, pd_all$name))
-    vi_idx  <- grepl("viab|live|livedead", canon(pool)) # find viability channel
-    vi_names<- intersect(pool[vi_idx], flowCore::colnames(ff))
-    trans_channels <- unique(c(trans_channels, vi_names))
-    trans_channels <- trans_channels[trans_channels %in% flowCore::colnames(ff)]
-
-    if (length(trans_channels)) {
-      ff <- tryCatch(
-        flowCore::transform(ff, flowCore::estimateLogicle(ff, channels = trans_channels)),
-        error = function(e) ff
-      )
-    }
-    ff
-  }
-
-  # QC helpers
-  run_qc_remove_margins <- function(ff) {
-    tryCatch(PeacoQC::RemoveMargins(ff, channels = 1:ncol(ff), save_fcs = FALSE, report = FALSE),
-             error = function(e) ff)
-  }
-
-  # Doublet removal using FSC-A vs FSC-H .
-  # Returns a subset flowFrame (keeps singlets). If channels are missing or it fails, returns input unchanged.
-  run_qc_remove_doublets <- function(ff, channelA = NULL, channelH = NULL) {
-    cn <- flowCore::colnames(ff)
-
-    # Prefer typical names if present; otherwise try to infer via .pick_fsc()
-    chA <- channelA %||% (.pick_fsc(cn, "A") %||% NA_character_)
-    chH <- channelH %||% (.pick_fsc(cn, "H") %||% NA_character_)
-
-    if (is.na(chA) || is.na(chH)) return(ff)
-    if (!(chA %in% cn) || !(chH %in% cn)) return(ff)
-
-    out <- tryCatch(
-      PeacoQC::RemoveDoublets(ff, channel1 = chA, channel2 = chH, output = "full"),
-      error = function(e) NULL
-    )
-    if (is.null(out)) return(ff)
-
-    # 'indices_doublets' are the event indices flagged as doublets
-    dbl <- out$indices_doublets
-    if (is.null(dbl) || !length(dbl)) return(ff)
-
-    keep <- setdiff(seq_len(nrow(ff@exprs)), dbl)
-    if (!length(keep)) return(ff)
-
-    ff[keep, ]
-  }
-
-  run_qc_peacoqc <- function(ff, min_events = 5000) {
-
-    n <- nrow(ff@exprs)
-
-    # Skip if too small
-    if (n < min_events) {
-      message("Skipping PeacoQC: only ", n, " events (< ", min_events, ")")
-      return(ff)
-    }
-
-    # Exclude Time from QC channels
-    cn <- flowCore::colnames(ff)
-    sig_channels <- cn[!grepl("^Time$", cn, ignore.case = TRUE)]
-
-    out <- tryCatch(
-      PeacoQC::PeacoQC(
-        ff,
-        channels = sig_channels,
-        report = FALSE,
-        save_fcs = FALSE
-      ),
-      error = function(e) {
-        warning("PeacoQC failed: ", conditionMessage(e))
-        NULL
-      }
-    )
-
-    if (is.null(out)) {
-      return(ff)
-    }
-
-    # Safety: don't allow pathological removals
-    keep <- out$GoodCells
-    if (!is.null(keep) && mean(keep, na.rm = TRUE) < 0.2) {
-      warning("PeacoQC would remove >80% of events - skipping for this file")
-      return(ff)
-    }
-
-    out$FinalFF %||% ff
-  }
-
-
-  # Marker vector across frames
-  get_marker_vector <- function(frames, name_col) {
-    if (is.null(frames) || !length(frames) || is.null(name_col)) return(numeric(0))
-    unlist(lapply(frames, function(ff) {
-      cn <- flowCore::colnames(ff)
-      if (!(name_col %in% cn)) return(numeric(0))
-      as.numeric(ff@exprs[, name_col])
-    }), use.names = FALSE)
-  }
-  # min-max normalise func
-  norm_minmax <- function(x){
-    r <- range(x, na.rm = TRUE)
-    if (!all(is.finite(r)) || diff(r) == 0) return(rep(0, length(x)))
-    (x - r[1]) / (r[2] - r[1])
-  }
-
-  # auto threshold for viability marker -- auto find pos neg populations and fit as two gaussians
-  # fall back to nothing if fails (<200 events, GMM fit failure, or component intersection can't be found)
-  auto_threshold_gmm <- function(x) {
-    x <- x[is.finite(x)]
-    # Not enough data to infer a bimodal split
-    if (length(x) < 200)
-      return(NA_real_)
-    m <- try(mclust::Mclust(x, G = 2), silent = TRUE)
-    if (inherits(m, "try-error"))
-      return(NA_real_)
-    # Order components by increasing mean (low -> high)
-    o  <- order(m$parameters$mean)
-    mu <- m$parameters$mean[o]
-    sd <- sqrt(m$parameters$variance$sigmasq)[o]
-    pr <- m$parameters$pro[o]
-    # Weighted component densities
-    f1 <- function(t) pr[1] * dnorm(t, mu[1], sd[1])
-    f2 <- function(t) pr[2] * dnorm(t, mu[2], sd[2])
-    # Search within robust range (avoid outliers)
-    rng <- range(quantile(x, c(0.001, 0.999), na.rm = TRUE))
-    ur <- try(
-      uniroot(function(t) f1(t) - f2(t), interval = rng)$root,
-      silent = TRUE
-    )
-    if (inherits(ur, "try-error")) NA_real_ else ur
-  }
-
-  # for downstream -- add debris/viability/single-cell labels as columns to the original
-  # flowframe. Allows writing pre-processed to .fsc files.
-  ff_with_extra_cols <- function(ff, extra_mat, extra_desc = NULL) {
-    stopifnot(is.matrix(extra_mat) || is.data.frame(extra_mat))
-    extra_mat <- as.matrix(extra_mat)
-    old_expr <- flowCore::exprs(ff)
-    new_expr <- cbind(old_expr, extra_mat)
-
-    old_par <- flowCore::pData(flowCore::parameters(ff))
-    tpl <- old_par[1, , drop = FALSE]
-    mk_row <- function(nm, ds, vals) {
-      row <- tpl
-      cols <- colnames(row)
-      if ("name"      %in% cols) row[,"name"]      <- nm
-      if ("desc"      %in% cols) row[,"desc"]      <- ds %||% nm
-      rng <- range(vals, na.rm = TRUE); if (!all(is.finite(rng))) rng <- c(0, 1)
-      span <- max(1, ceiling(rng[2] - rng[1]))
-      if ("range"     %in% cols) row[,"range"]     <- span
-      if ("minRange"  %in% cols) row[,"minRange"]  <- rng[1]
-      if ("maxRange"  %in% cols) row[,"maxRange"]  <- rng[2]
-      row
-    }
-    extra_names <- colnames(extra_mat)
-    extra_descs <- extra_desc %||% extra_names
-    add_par <- do.call(rbind, Map(function(nm, ds) mk_row(nm, ds, new_expr[, nm]), extra_names, extra_descs))
-
-    par2 <- Biobase::AnnotatedDataFrame(
-      data.frame(
-        rbind(as.data.frame(old_par, check.names = FALSE, stringsAsFactors = FALSE),
-              as.data.frame(add_par, check.names = FALSE, stringsAsFactors = FALSE)),
-        check.names = FALSE, stringsAsFactors = FALSE
-      )
-    )
-    kw <- flowCore::keyword(ff)
-    kw[["AUTOFLOW_EXTRA_CHANNELS"]] <- paste(extra_names, collapse = ",")
-    flowCore::flowFrame(exprs = new_expr, parameters = par2, description = kw)
-  }
-
-  # helper for supervised - allow scaling test data with the bundled model info
-  scale_with_bundle <- function(df_mat, means, sds) {
-    stopifnot(all(names(means) %in% colnames(df_mat)), all(names(sds) %in% colnames(df_mat)))
-    X <- as.matrix(df_mat[, names(means), drop = FALSE])
-    sds[is.na(sds) | sds == 0] <- 1
-    X <- sweep(X, 2, means[names(means)], "-")
-    X <- sweep(X, 2, sds[names(sds)],   "/")
-    X
-  }
-
-  # Auto-map model features to dataset columns
-  # Returns a named character vector: names = model features, values = matched
-  # dataset column names (or NA if no match).
-  auto_map_features <- function(model_feats, dataset_cols) {
-    stopifnot(is.character(model_feats), is.character(dataset_cols))
-    if (!length(model_feats) || !length(dataset_cols)) {
-      return(setNames(rep(NA_character_, length(model_feats)), model_feats))
-    }
-
-    canon <- function(x) tolower(gsub("[^a-z0-9]+", "", x))
-
-    out <- setNames(rep(NA_character_, length(model_feats)), model_feats)
-
-    ds_raw   <- dataset_cols
-    ds_low   <- tolower(dataset_cols)
-    ds_mn    <- make.names(dataset_cols)
-    ds_canon <- canon(dataset_cols)
-
-    mf_raw   <- model_feats
-    mf_low   <- tolower(model_feats)
-    mf_mn    <- make.names(model_feats)
-    mf_canon <- canon(model_feats)
-
-    # case-insensitive exact match on raw names
-    for (i in seq_along(mf_raw)) {
-      hit <- which(ds_low == mf_low[i])
-      if (length(hit)) { out[i] <- ds_raw[hit[1]]; next }
-    }
-
-    # exact match after make.names on both sides
-    for (i in seq_along(mf_raw)) if (is.na(out[i])) {
-      hit <- which(ds_mn == mf_mn[i])
-      if (length(hit)) { out[i] <- ds_raw[hit[1]]; next }
-    }
-
-    # exact match on canonicalised strings (strip punctuation/case)
-    for (i in seq_along(mf_raw)) if (is.na(out[i])) {
-      hit <- which(ds_canon == mf_canon[i])
-      if (length(hit)) { out[i] <- ds_raw[hit[1]]; next }
-    }
-
-    # soft match: canonical startsWith in either direction (take first hit)
-    for (i in seq_along(mf_raw)) if (is.na(out[i])) {
-      hit <- which(startsWith(ds_canon, mf_canon[i]) | startsWith(mf_canon[i], ds_canon))
-      if (length(hit)) out[i] <- ds_raw[hit[1]]
-    }
-
-    out
-  }
-
   ## Reactive state
   volumes <- c(Home = fs::path_home(), shinyFiles::getVolumes()())
   shinyFiles::shinyFileChoose(input, "files", roots = volumes, session = session)
@@ -407,6 +36,8 @@ app_server <- function(input, output, session) {
   scaling_sds   <- reactiveVal(NULL)
   class_levels  <- reactiveVal(NULL)
   feature_map   <- reactiveVal(NULL)
+  qc_flags  <- reactiveVal(NULL)  # list of per-file data.frames (nrow = events)
+  qc_counts <- reactiveVal(NULL)  # per-file summary (optional)
   viab_thr_rv  <- reactiveVal(NULL)     # the actual threshold used everywhere
   viab_thr_src <- reactiveVal("auto")   # "auto" or "manual"
   # Debounced version of the slider input (wait 1s after last change)
@@ -426,6 +57,7 @@ app_server <- function(input, output, session) {
 
   # prep for reading in .fcs and initialise
   files_all <- reactive({
+    qc_flags(NULL); qc_counts(NULL)
     if (is.integer(input$files)) return(NULL)
     paths <- shinyFiles::parseFilePaths(volumes, input$files)$datapath
     paths <- as.character(paths)
@@ -454,6 +86,7 @@ app_server <- function(input, output, session) {
     if (!identical(input$preprocess, "Yes")) {
       # No preprocessing: just (re)build label maps from raw
       proc_ff(NULL)
+      qc_flags(NULL); qc_counts(NULL)
       maps <- build_name_label_maps(raw_ff())
       name_to_label(maps$name_to_label)
       label_to_name(maps$label_to_name)
@@ -471,79 +104,66 @@ app_server <- function(input, output, session) {
     R <- raw_ff()
     if (!length(R)) return(invisible())
 
-    # Safe wrappers that never throw
-    safe_RemoveMargins <- function(ff) {
-      tryCatch(run_qc_remove_margins(ff), error = function(e) ff)
-    }
-    safe_remove_debris <- function(ff) {
-      tryCatch(remove_debris_if_any(ff), error = function(e) ff)
-    }
-    safe_preprocess    <- function(ff) {
-      tryCatch(preprocess_robust(ff), error = function(e) ff)
-    }
-    safe_PeacoQC       <- function(ff) {
-      tryCatch({
-        out <- run_qc_peacoqc(ff)
-        if (is.null(out)) ff else out
-      }, error = function(e) ff)
-    }
-    safe_remove_doublets <- function(ff) {
-      tryCatch(run_qc_remove_doublets(ff), error = function(e) ff)
-    }
+    res <- tryCatch(
+      preprocess_flowframes(R, min_events_peacoqc = 5000),
+      error = function(e) NULL
+    )
 
-    # Apply stepwise per file; track debris counts but don't fail
-    n_before   <- vapply(R, function(ff) nrow(ff@exprs), numeric(1))
-    deb_counts <- numeric(length(R))
-    dbl_counts <- numeric(length(R))
-
-    P <- lapply(seq_along(R), function(i){
-      ff0 <- R[[i]]
-      ff1 <- safe_RemoveMargins(ff0)
-      # debris detection
-      dc  <- tryCatch(sum(detect_debris_flags(ff1) == 1L, na.rm = TRUE), error = function(e) 0)
-      deb_counts[i] <<- dc
-      ff2 <- safe_remove_debris(ff1)
-      n2   <- nrow(ff2@exprs)
-      ff2b <- safe_remove_doublets(ff2)
-      dbl_counts[i] <<- max(0, n2 - nrow(ff2b@exprs))
-      ff3 <- safe_preprocess(ff2b)
-      ff4 <- safe_PeacoQC(ff3)
-      ff4
-    })
-
-    # If something catastrophic produced zero-length or invalid frames, fallback to raw
-    ok_lengths <- vapply(P, function(ff) inherits(ff, "flowFrame") && nrow(ff@exprs) > 0, logical(1))
-    if (!length(P) || !all(ok_lengths)) {
-      proc_ff(NULL)  # ensure downstream uses raw
-      showNotification("Pre-processing failed or produced empty output - proceeding with RAW data.", type = "warning", duration = 6)
+    # catastrophic fallback
+    if (is.null(res) || is.null(res$frames) || !length(res$frames)) {
+      proc_ff(NULL)
+      qc_flags(NULL); qc_counts(NULL)
+      showNotification("Pre-processing failed - proceeding with RAW data.", type = "warning", duration = 6)
     } else {
-      proc_ff(P)
+      ok_lengths <- vapply(res$frames, function(ff) inherits(ff, "flowFrame") && nrow(ff@exprs) > 0, logical(1))
+      if (!all(ok_lengths)) {
+        proc_ff(NULL)
+        qc_flags(NULL); qc_counts(NULL)
+        showNotification("Pre-processing produced empty output - proceeding with RAW data.", type = "warning", duration = 6)
+      } else {
+        proc_ff(res$frames)
+        qc_flags(res$flags)
+        qc_counts(res$counts)
 
-      if (sum(deb_counts) > 0) {
-        pct <- 100 * sum(deb_counts) / sum(n_before)
-        for (i in seq_along(R)) {
-          if (deb_counts[i] > 0) {
-            showNotification(sprintf("File %02d: removed %s debris events (%.2f%%).",
-                                     i, format(deb_counts[i]), 100*deb_counts[i]/n_before[i]),
-                             type = "message", duration = 4)
+        # notifications from counts (optional)
+        if (!is.null(res$counts) && nrow(res$counts)) {
+          # debris
+          if (sum(res$counts$n_debris, na.rm = TRUE) > 0) {
+            for (i in seq_len(nrow(res$counts))) {
+              if (res$counts$n_debris[i] > 0) {
+                showNotification(
+                  sprintf("File %02d: flagged %s debris events.",
+                          i, format(res$counts$n_debris[i])),
+                  type = "message", duration = 4
+                )
+              }
+            }
+          }
+          # doublets
+          if (sum(res$counts$n_doublet, na.rm = TRUE) > 0) {
+            for (i in seq_len(nrow(res$counts))) {
+              if (res$counts$n_doublet[i] > 0) {
+                showNotification(
+                  sprintf("File %02d: flagged %s doublets.",
+                          i, format(res$counts$n_doublet[i])),
+                  type = "message", duration = 4
+                )
+              }
+            }
+          }
+          # badqc
+          if (sum(res$counts$n_badqc, na.rm = TRUE) > 0) {
+            for (i in seq_len(nrow(res$counts))) {
+              if (res$counts$n_badqc[i] > 0) {
+                showNotification(
+                  sprintf("File %02d: flagged %s bad-QC events.",
+                          i, format(res$counts$n_badqc[i])),
+                  type = "message", duration = 4
+                )
+              }
+            }
           }
         }
-        showNotification(sprintf("Total debris removed: %s (%.2f%%).",
-                                 format(sum(deb_counts)), pct),
-                         type = "message", duration = 5)
-      }
-      if (sum(dbl_counts) > 0) {
-        pct_dbl <- 100 * sum(dbl_counts) / sum(n_before)
-        for (i in seq_along(R)) {
-          if (dbl_counts[i] > 0) {
-            showNotification(sprintf("File %02d: removed %s doublets (%.2f%%).",
-                                     i, format(dbl_counts[i]), 100*dbl_counts[i]/n_before[i]),
-                             type = "message", duration = 4)
-          }
-        }
-        showNotification(sprintf("Total doublets removed: %s (%.2f%%).",
-                                 format(sum(dbl_counts)), pct_dbl),
-                         type = "message", duration = 5)
       }
     }
 
@@ -603,13 +223,47 @@ app_server <- function(input, output, session) {
 
     paths <- shinyFiles::parseFilePaths(volumes, input$files)$datapath
     paths <- as.character(paths)
+
+    flags_list <- qc_flags()  # may be NULL
+
     meta_list <- lapply(seq_along(CF), function(i) {
-      nc  <- nrow(CF[[i]]@exprs)
-      data.frame(
+      nc <- nrow(CF[[i]]@exprs)
+
+      base <- data.frame(
         filename1 = rep(basename(paths[i] %||% sprintf("file_%d", i)), nc),
-        filename2 = rep(NA_character_, nc),
+        #filename2 = rep(NA_character_, nc),
         stringsAsFactors = FALSE, check.names = FALSE
       )
+
+      need_cols <- c("AutoFlow_debris","AutoFlow_doublet","AutoFlow_badqc")
+
+      if (!is.null(flags_list) && length(flags_list) >= i && !is.null(flags_list[[i]])) {
+        fl <- flags_list[[i]]
+        if (is.data.frame(fl) && nrow(fl) == nc && all(need_cols %in% names(fl))) {
+          fl <- fl[, need_cols, drop = FALSE]
+          cbind(base, fl)
+        } else {
+          cbind(
+            base,
+            data.frame(
+              AutoFlow_debris  = integer(nc),
+              AutoFlow_doublet = integer(nc),
+              AutoFlow_badqc   = integer(nc),
+              stringsAsFactors = FALSE, check.names = FALSE
+            )
+          )
+        }
+      } else {
+        cbind(
+          base,
+          data.frame(
+            AutoFlow_debris  = integer(nc),
+            AutoFlow_doublet = integer(nc),
+            AutoFlow_badqc   = integer(nc),
+            stringsAsFactors = FALSE, check.names = FALSE
+          )
+        )
+      }
     })
     meta_comb <- as.data.frame(
       data.table::rbindlist(meta_list, use.names = TRUE, fill = TRUE),
@@ -771,6 +425,14 @@ app_server <- function(input, output, session) {
   })
 
   ## Unsupervised
+  output$run_unsup_button <- renderUI({
+    lab <- if (isTRUE(input$use_projection)) {
+      "Run Unsupervised (fast: train+project+predict)"
+    } else {
+      "Run Unsupervised (full)"
+    }
+    actionButton("runClustering", lab)
+  })
   # allow marker density plots of chosed cluster, or pairs of clusters for visual comparison
   output$unsup_qc_controls <- renderUI({
     req(unsup_obj(), seurat_dat_comb(), label_to_name())
@@ -795,6 +457,12 @@ app_server <- function(input, output, session) {
     )
   })
 
+  observe({
+    req(seurat_dat_comb())
+    n <- nrow(seurat_dat_comb())
+    shinyjs::toggleState("use_projection", condition = n > 120000)
+  })
+
   observeEvent(input$runClustering, {
     req(input$model_type == "Unsupervised")
     req(seurat_dat_comb(), seurat_meta_comb())
@@ -816,15 +484,32 @@ app_server <- function(input, output, session) {
 
     meta <- seurat_meta_comb()
 
-    # If subsampling is needed, KEEP row names in lockstep with X
-    #if (nrow(X) > 1e5) {
-    #  set.seed(1L)
-    #  idx  <- sample(nrow(X), 1e5)
-    #  X    <- X[idx, , drop = FALSE]
-    #  meta <- meta[idx, , drop = FALSE]
-    #}
+    # Optional filtering when preprocessing was chosen
+    if (identical(input$preprocess, "Yes")) {
+      keep <- rep(TRUE, nrow(meta))
 
-    # Make 100% sure meta rownames match cell ids (rownames of X)
+      # drop debris/doublets/badqc
+      if ("AutoFlow_debris" %in% names(meta))  keep <- keep & (meta$AutoFlow_debris  == 0L)
+      if ("AutoFlow_doublet" %in% names(meta)) keep <- keep & (meta$AutoFlow_doublet == 0L)
+      if ("AutoFlow_badqc" %in% names(meta))   keep <- keep & (meta$AutoFlow_badqc   == 0L)
+
+      # viability filter (computed on the fly; still traceable)
+      vl_name <- input$viability_marker_name %||% default_viab_name()
+      thr     <- viab_thr_rv() %||% as.numeric(input$viability_threshold)
+
+      if (!is.null(vl_name) && vl_name %in% colnames(seurat_dat_comb()) && is.finite(thr)) {
+        v <- suppressWarnings(as.numeric(seurat_dat_comb()[, vl_name]))
+        viable_flag <- as.integer(v < thr) # 1 = viable, 0 = non-viable
+        meta$AutoFlow_viable <- viable_flag
+        keep <- keep & (meta$AutoFlow_viable == 1L)
+      }
+
+      # apply filter to X + meta together
+      X    <- X[keep, , drop = FALSE]
+      meta <- meta[keep, , drop = FALSE]
+
+      validate(need(nrow(X) > 10, "Too few events left after preprocessing filters."))
+    }
     stopifnot(identical(rownames(X), rownames(meta)))
     row_ids <- rownames(X)
 
@@ -834,10 +519,16 @@ app_server <- function(input, output, session) {
     # Store the original row ids we used to build this Seurat object
     seur@meta.data$autoflow_row_id <- row_ids
     # run_unsup_fun is a helper taking the users inputs for res and logfold
-    seur <- run_unsupervised_func(
+    seur <- seur <- run_unsupervised_func(
       seur,
       res     = as.numeric(input$res_umap),
-      logfold = as.numeric(input$lf_umap)
+      logfold = as.numeric(input$lf_umap),
+      percentage_cells = 0.25,  # or expose in UI later if you want
+      max_umap_train = if (isTRUE(input$use_projection)) as.integer(input$max_umap_train) else NULL,
+      seed = 1L,  # or expose
+      k_transfer = if (isTRUE(input$use_projection)) as.integer(input$k_transfer) else 15L,
+      min_transfer_conf = if (isTRUE(input$use_projection)) as.numeric(input$min_transfer_conf) else NULL,
+      low_conf_label = if (isTRUE(input$use_projection)) input$low_conf_label else "Uncertain"
     )
 
     unsup_obj(seur)
@@ -868,19 +559,6 @@ app_server <- function(input, output, session) {
                            name = paste0("Threshold = ", signif(input$viability_threshold, 4)))
     plotly::layout(p, xaxis = list(title = "Marker intensity"), yaxis = list(title = "Density"))
   })
-
-  dens_or_hist <- function(p, x, nm) {
-    x <- suppressWarnings(as.numeric(x))
-    x <- x[is.finite(x)]
-    if (length(x) >= 2 && stats::var(x) > 0) {
-      d <- stats::density(x)
-      plotly::add_lines(p, x = d$x, y = d$y, name = nm)
-    } else if (length(x) == 1) {
-      plotly::add_histogram(p, x = x, name = paste0(nm, " (1 obs)"), nbinsx = 1)
-    } else {
-      p
-    }
-  }
 
   # render the unsup cluster expression plots
   output$unsup_marker_qc <- plotly::renderPlotly({
@@ -1203,8 +881,99 @@ app_server <- function(input, output, session) {
     req(summary_tab())
     summary_tab()
   })
+  qc_file_summary <- reactive({
+    req(raw_ff())
+    R <- raw_ff()
+    P <- proc_ff() %||% R
 
+    paths <- shinyFiles::parseFilePaths(volumes, input$files)$datapath
+    paths <- as.character(paths)
+
+    # counts from preprocess_flowframes()
+    cc <- qc_counts()
+
+    # viability settings
+    vl_name <- input$viability_marker_name %||% default_viab_name()
+    thr     <- input$viability_threshold %||% auto_viab_thr_val() %||% 0
+
+    # compute viable + totals per file using proc frames (row space matches flags)
+    flags_list <- qc_flags()
+
+    out <- lapply(seq_along(P), function(i) {
+      ff <- P[[i]]
+      if (!inherits(ff, "flowFrame")) return(NULL)
+      n <- nrow(ff@exprs)
+
+      fl <- NULL
+      if (!is.null(flags_list) && length(flags_list) >= i) fl <- flags_list[[i]]
+      if (is.null(fl) || !is.data.frame(fl) || nrow(fl) != n) {
+        fl <- data.frame(
+          AutoFlow_debris  = integer(n),
+          AutoFlow_doublet = integer(n),
+          AutoFlow_badqc   = integer(n),
+          stringsAsFactors = FALSE
+        )
+      }
+
+      keep <- (fl$AutoFlow_debris == 0L) &
+        (fl$AutoFlow_doublet == 0L) &
+        (fl$AutoFlow_badqc == 0L)
+
+      # viable computed on *all* events (or you can do viable among keep only)
+      viable <- rep(NA_integer_, n)
+      if (!is.null(vl_name) && nzchar(vl_name) && vl_name %in% flowCore::colnames(ff)) {
+        v <- suppressWarnings(as.numeric(ff@exprs[, vl_name]))
+        viable <- as.integer(is.finite(v) & (v < thr))
+      }
+
+      n_viable_all  <- if (all(is.na(viable))) NA_integer_ else sum(viable == 1L, na.rm = TRUE)
+      n_viable_keep <- if (all(is.na(viable))) NA_integer_ else sum(viable[keep] == 1L, na.rm = TRUE)
+
+      # per-file counts: prefer qc_counts if present, else compute from flags
+      n_deb <- if (!is.null(cc) && nrow(cc) >= i) cc$n_debris[i] else sum(fl$AutoFlow_debris == 1L)
+      n_dbl <- if (!is.null(cc) && nrow(cc) >= i) cc$n_doublet[i] else sum(fl$AutoFlow_doublet == 1L)
+      n_bad <- if (!is.null(cc) && nrow(cc) >= i) cc$n_badqc[i] else sum(fl$AutoFlow_badqc == 1L)
+
+      data.frame(
+        file_i = i,
+        filename = basename(paths[i] %||% sprintf("file_%02d.fcs", i)),
+        preprocess_on = identical(input$preprocess, "Yes"),
+        n_events = n,
+        n_debris = as.integer(n_deb),
+        pct_debris = 100 * as.numeric(n_deb) / n,
+        n_doublet = as.integer(n_dbl),
+        pct_doublet = 100 * as.numeric(n_dbl) / n,
+        n_badqc = as.integer(n_bad),
+        pct_badqc = 100 * as.numeric(n_bad) / n,
+        n_keep = sum(keep),
+        pct_keep = 100 * sum(keep) / n,
+        viability_marker = if (!is.null(vl_name)) vl_name else NA_character_,
+        viability_threshold = as.numeric(thr),
+        n_viable_all = as.integer(n_viable_all),
+        pct_viable_all = if (is.na(n_viable_all)) NA_real_ else 100 * n_viable_all / n,
+        n_viable_keep = as.integer(n_viable_keep),
+        pct_viable_keep = if (is.na(n_viable_keep)) NA_real_ else 100 * n_viable_keep / sum(keep),
+        stringsAsFactors = FALSE,
+        check.names = FALSE
+      )
+    })
+
+    out <- Filter(Negate(is.null), out)
+    if (!length(out)) return(data.frame())
+    dplyr::bind_rows(out)
+  })
+  output$table_qcfiles <- DT::renderDataTable({
+    req(qc_file_summary())
+    qc_file_summary()
+  })
   ## Downloads
+  output$download_qcfiles <- downloadHandler(
+    filename = function() paste(Sys.Date(), "AutoFlow_file_QC_summary.csv", sep = "_"),
+    content = function(fname) {
+      req(qc_file_summary())
+      utils::write.csv(qc_file_summary(), fname, row.names = FALSE)
+    }
+  )
   output$downloadcounts <- downloadHandler(
     filename = function() paste(Sys.Date(), "AutoFlow_longformat_counts.csv", sep = "_"),
     content = function(fname) {
@@ -1236,69 +1005,221 @@ app_server <- function(input, output, session) {
       utils::write.csv(wide, fname, row.names = FALSE)
     }
   )
+  output$downloadqcout <- downloadHandler(
+    filename = function() paste(Sys.Date(), "AutoFlow_QC_flags.csv", sep = "_"),
+    content = function(fname) {
+      req(qc_file_summary())
+      utils::write.csv(qc_file_summary(), fname, row.names = FALSE)
+    }
+  )
   observe({
     shinyjs::toggleState(
       "downloadprocessed",
       condition = !is.null(proc_ff()) && length(proc_ff()) > 0
     )
   })
-  # Export processed FCS
+  # Export PROCESSED FCS annotated with already-computed flags (light debug)
   output$downloadprocessed <- downloadHandler(
-    filename = function() paste0(Sys.Date(), "_processed_fcs.zip"),
+    filename = function() paste0(Sys.Date(), "_AutoFlow_processed_annotated_fcs.zip"),
     content = function(zipfile) {
-      req(raw_ff())
+
+      logd <- function(...) {
+        message(format(Sys.time(), "%H:%M:%S"), " | ", paste0(..., collapse = ""))
+      }
+
+      # Compact per-file snapshot only when something goes wrong
+      snap_ff <- function(i, ff, add = NULL, fl = NULL, tag = "") {
+        logd("---- SNAPSHOT i=", i, " ", tag, " ----")
+
+        expr <- tryCatch(flowCore::exprs(ff), error = function(e) NULL)
+        if (!is.null(expr)) {
+          logd("exprs: nrow=", nrow(expr), " ncol=", ncol(expr))
+          cn <- colnames(expr) %||% character()
+          logd("colnames head: ", paste(utils::head(cn, 8), collapse = ", "))
+        } else {
+          logd("exprs: <FAILED>")
+        }
+
+        pd <- tryCatch(flowCore::pData(flowCore::parameters(ff)), error = function(e) NULL)
+        if (!is.null(pd)) {
+          logd("pData: nrow=", nrow(pd), " ncol=", ncol(pd))
+          if ("name" %in% names(pd)) {
+            logd("pd$name head: ", paste(utils::head(pd$name, 8), collapse = ", "))
+          }
+          logd("rownames(pd) head: ", paste(utils::head(rownames(pd), 8), collapse = ", "))
+        } else {
+          logd("pData: <FAILED>")
+        }
+
+        kw <- tryCatch(flowCore::keyword(ff), error = function(e) NULL)
+        if (!is.null(kw)) {
+          has_pn <- any(grepl("^\\$P\\d+", names(kw) %||% character()))
+          logd("keyword: $PAR=", kw[["$PAR"]], " $TOT=", kw[["$TOT"]], " has $Pn*=", has_pn)
+        } else {
+          logd("keyword: <FAILED>")
+        }
+
+        if (!is.null(fl)) {
+          logd("flags: class=", paste(class(fl), collapse = "/"),
+               if (is.data.frame(fl)) paste0(" nrow=", nrow(fl), " ncol=", ncol(fl)) else "")
+          if (is.data.frame(fl)) logd("flags cols: ", paste(colnames(fl), collapse = ", "))
+        }
+
+        if (!is.null(add)) {
+          logd("add: nrow=", nrow(add), " ncol=", ncol(add))
+          logd("add cols: ", paste(colnames(add), collapse = ", "))
+        }
+
+        logd("---- END SNAPSHOT ----")
+      }
+
+      # If rlang exists, last_trace() is nicer than base traceback
+      log_trace <- function() {
+        if (requireNamespace("rlang", quietly = TRUE)) {
+          tr <- tryCatch(rlang::last_trace(), error = function(e) NULL)
+          if (!is.null(tr)) {
+            logd("rlang::last_trace():")
+            logd(paste(utils::capture.output(print(tr)), collapse = "\n"))
+            return(invisible())
+          }
+        }
+        logd("base traceback():")
+        logd(paste(utils::capture.output(traceback()), collapse = "\n"))
+      }
+
+      # Preconditions
       validate(need(identical(input$preprocess, "Yes"),
-                    "Turn preprocessing on to export processed FCS."))
-      P <- proc_ff(); req(P)
+                    "Turn preprocessing on to export processed annotated FCS."))
+
+      P <- proc_ff()
+      validate(need(!is.null(P) && length(P) > 0, "No processed flowFrames available to export."))
+
+      flags_list <- qc_flags()
+      validate(need(!is.null(flags_list) && length(flags_list) == length(P),
+                    "QC flags not available (or wrong length). Re-run preprocessing."))
+
+      paths <- shinyFiles::parseFilePaths(volumes, input$files)$datapath
+      paths <- as.character(paths)
+      if (length(paths) < length(P)) paths <- c(paths, rep(NA_character_, length(P) - length(paths)))
 
       vl_name <- input$viability_marker_name %||% default_viab_name()
       thr     <- input$viability_threshold %||% auto_viab_thr_val() %||% 0
 
-      td <- tempfile("autoflow_fcs_"); dir.create(td, showWarnings = FALSE)
+      td <- tempfile("autoflow_fcs_")
+      dir.create(td, showWarnings = FALSE, recursive = TRUE)
+
+      logd("downloadprocessed: n_files=", length(P),
+           "  vl_name=", vl_name, " thr=", thr,
+           "  td=", td)
+
+      out_files <- character(0)
+      need_cols <- c("AutoFlow_debris", "AutoFlow_doublet", "AutoFlow_badqc")
+
+      # throttle progress logging
+      every_k <- 5L
 
       for (i in seq_along(P)) {
         ff <- P[[i]]
+        fl <- flags_list[[i]]
 
-        debris <- detect_debris_flags(ff)          # annotate
-        if (!length(debris)) debris <- rep(0L, nrow(ff@exprs))
-
-        viable <- rep(1L, nrow(ff@exprs))
-        if (!is.null(vl_name) && vl_name %in% flowCore::colnames(ff)) {
-          viable <- as.integer(ff@exprs[, vl_name] < thr)
+        if (!inherits(ff, "flowFrame")) {
+          logd("SKIP i=", i, ": not flowFrame")
+          next
         }
 
-        single <- rep(1L, nrow(ff@exprs))
-        if (all(c("FSC.A","FSC.H") %in% flowCore::colnames(ff))) {
-          dres <- try(PeacoQC::RemoveDoublets(ff, channel1 = "FSC.A", channel2 = "FSC.H", output = "full"),
-                      silent = TRUE)
-          if (!inherits(dres, "try-error") && length(dres$indices_doublets)) {
-            single[dres$indices_doublets] <- 0L
-          }
+        expr <- tryCatch(flowCore::exprs(ff), error = function(e) {
+          logd("ERROR i=", i, ": exprs(ff) failed: ", conditionMessage(e))
+          snap_ff(i, ff, fl = fl, tag = "[exprs failed]")
+          log_trace()
+          NULL
+        })
+        if (is.null(expr)) next
+
+        n <- nrow(expr)
+        if (!is.finite(n) || n <= 0) {
+          logd("SKIP i=", i, ": n<=0")
+          next
         }
 
-        add <- cbind(
+        # build required vectors from precomputed flags
+        if (!(is.data.frame(fl) && nrow(fl) == n && all(need_cols %in% names(fl)))) {
+          logd("FATAL i=", i, ": flags misaligned (flags_rows=",
+               if (is.data.frame(fl)) nrow(fl) else NA, " expected=", n, ")")
+          snap_ff(i, ff, fl = fl, tag = "[flags misaligned]")
+          stop(sprintf("Flags missing/misaligned for file %d.", i))
+        }
+
+        debris  <- as.integer(fl$AutoFlow_debris)
+        doublet <- as.integer(fl$AutoFlow_doublet)
+        badqc   <- as.integer(fl$AutoFlow_badqc)
+
+        debris[!is.finite(debris)   | !(debris %in% c(0L,1L))]   <- 0L
+        doublet[!is.finite(doublet) | !(doublet %in% c(0L,1L))] <- 0L
+        badqc[!is.finite(badqc)     | !(badqc %in% c(0L,1L))]   <- 0L
+
+        # viability on processed data
+        viable <- rep.int(1L, n)
+        if (!is.null(vl_name) && (vl_name %in% flowCore::colnames(ff))) {
+          v <- suppressWarnings(as.numeric(expr[, vl_name]))
+          ok <- is.finite(v)
+          viable[ok] <- as.integer(v[ok] < thr)
+        }
+
+        add <- data.frame(
           AutoFlow_debris     = debris,
-          AutoFlow_viable     = viable,
-          AutoFlow_singlecell = single
+          AutoFlow_doublet    = doublet,
+          AutoFlow_badqc      = badqc,
+          AutoFlow_viable     = as.integer(viable),
+          AutoFlow_singlecell = as.integer(doublet == 0L),
+          check.names = FALSE
         )
 
-        new_names <- colnames(add)
-        collide <- intersect(new_names, flowCore::colnames(ff))
-        if (length(collide)) new_names <- paste0(new_names, "_af")
-        colnames(add) <- new_names
+        if (i %% every_k == 1L || i == length(P)) {
+          logd("i=", i, "/", length(P), "  n=", n, "  p=", ncol(expr))
+        }
 
-        ff2 <- ff_with_extra_cols(ff, add, extra_desc = paste0(new_names, " (AutoFlow)"))
-        out_path <- file.path(td, sprintf("AutoFlow_processed_%02d.fcs", i))
-        flowCore::write.FCS(ff2, filename = out_path)
+        ff2 <- tryCatch(
+          ff_add_cols_safe(ff, add, extra_desc = paste0(colnames(add), " (AutoFlow)")),
+          error = function(e) {
+            logd("ERROR i=", i, ": ff_add_cols_safe failed: ", conditionMessage(e))
+            snap_ff(i, ff, add = add, fl = fl, tag = "[ff_add_cols_safe failed]")
+            log_trace()
+            NULL
+          }
+        )
+        if (is.null(ff2)) next
+
+        in_base <- basename(paths[i] %||% sprintf("file_%02d.fcs", i))
+        in_base <- sub("\\.fcs$", "", in_base, ignore.case = TRUE)
+        out_name <- sprintf("AutoFlow_processed__%02d__%s.fcs", i, in_base)
+        out_path <- file.path(td, out_name)
+
+        ok_write <- tryCatch({
+          flowCore::write.FCS(ff2, filename = out_path)
+          TRUE
+        }, error = function(e) {
+          logd("ERROR i=", i, ": write.FCS failed: ", conditionMessage(e))
+          # snapshot after building ff2 is useful too:
+          snap_ff(i, ff2, add = add, fl = fl, tag = "[write.FCS failed; snapshot ff2]")
+          log_trace()
+          FALSE
+        })
+
+        if (ok_write && file.exists(out_path)) {
+          out_files <- c(out_files, out_path)
+        }
       }
 
-      old_wd <- setwd(td); on.exit(setwd(old_wd), add = TRUE)
-      files <- list.files(td, pattern = "\\.fcs$", full.names = FALSE)
-      if (length(files) == 0) stop("No processed FCS files generated.")
+      logd("written=", length(out_files), "/", length(P))
+      validate(need(length(out_files) > 0,
+                    "No processed annotated FCS files were generated (see console logs)."))
+
       if (requireNamespace("zip", quietly = TRUE)) {
-        zip::zip(zipfile, files = files)
+        zip::zipr(zipfile, files = out_files, root = td)
       } else {
-        utils::zip(zipfile, files = files)
+        old <- getwd(); on.exit(setwd(old), add = TRUE)
+        setwd(td)
+        utils::zip(zipfile, files = basename(out_files))
       }
     }
   )
@@ -1311,69 +1232,3 @@ app_server <- function(input, output, session) {
   )
 }
 
-## Unsupervised helper
-run_unsupervised_func <- function(flow_data, res = 0.5, logfold = 0.25, percentage_cells = 0.25, batch_correct = FALSE) {
-
-  # Ensure Timepoint column exists
-  if (!("Timepoint" %in% colnames(flow_data@meta.data))) {
-    flow_data@meta.data$Timepoint <- NA
-  }
-
-  ref <- flow_data
-  ref <- Seurat::NormalizeData(ref)
-  ref <- Seurat::FindVariableFeatures(ref)
-  ref <- Seurat::ScaleData(ref)
-  ref <- Seurat::RunPCA(ref, features = VariableFeatures(ref))
-
-  # Run UMAP in 3D
-  ref <- Seurat::RunUMAP(ref, dims = 1:ncol(ref$pca), n.components = 3L, return.model = TRUE)
-  ref <- Seurat::FindNeighbors(ref, dims = 1:ncol(ref$pca), reduction = "pca")
-
-  # Prefer Leiden (algorithm = 4) if supported, else Louvain (algorithm = 1)
-  algo_to_use <- if ("algorithm" %in% names(formals(Seurat::FindClusters))) 4 else 1
-  message(sprintf("Running clustering with algorithm = %s (%s)",
-                  algo_to_use, ifelse(algo_to_use == 4, "Leiden", "Louvain")))
-  ref <- Seurat::FindClusters(ref, resolution = res, algorithm = algo_to_use)
-
-  # Marker detection
-  suppressWarnings({
-    markers.pos     <- Seurat::FindAllMarkers(ref, only.pos = TRUE,  min.pct = percentage_cells, logfc.threshold = logfold)
-    markers.pos_neg <- Seurat::FindAllMarkers(ref, only.pos = FALSE, min.pct = percentage_cells, logfc.threshold = logfold)
-  })
-  all_markers <- merge(markers.pos_neg, markers.pos, by = c("cluster", "gene"), all = TRUE)
-
-  # Clean up marker labels
-  if (nrow(all_markers)) {
-    all_markers$gene <- sub("__dup.*$", "", all_markers$gene)
-  }
-
-  # Generate cluster assignments with +/- marker labels
-  if (nrow(all_markers)) {
-    all_table_neg <- table(all_markers[all_markers$avg_log2FC.x < 0, ]$cluster,
-                           all_markers[all_markers$avg_log2FC.x < 0, ]$gene)
-    all_table_pos <- table(all_markers[all_markers$avg_log2FC.x > 0, ]$cluster,
-                           all_markers[all_markers$avg_log2FC.x > 0, ]$gene)
-
-    all_labels <- lapply(1:nrow(all_table_neg), function(i) {
-      labs_neg <- paste0(colnames(all_table_neg)[all_table_neg[i, ] == 1], "-")
-      labs_pos <- paste0(colnames(all_table_pos)[all_table_pos[i, ] == 1], "+")
-      c("cluster" = rownames(all_table_pos)[i],
-        "assignment" = paste(paste(labs_pos, collapse = ""), paste(labs_neg, collapse = ""), collapse = ""))
-    })
-
-    if (length(all_labels)) {
-      manual <- data.frame(do.call("rbind", all_labels))
-      manual <- manual[order(as.numeric(manual$cluster)), ]
-      ref@meta.data <- ref@meta.data %>%
-        dplyr::left_join(manual, by = c("seurat_clusters" = "cluster"))
-    }
-  }
-
-  # Ensure assignment column exists
-  rownames(ref@meta.data) <- colnames(ref)
-  if (!"assignment" %in% colnames(ref@meta.data)) {
-    ref@meta.data$assignment <- as.character(Seurat::Idents(ref))
-  }
-
-  ref
-}

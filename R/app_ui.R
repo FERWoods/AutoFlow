@@ -59,9 +59,41 @@ app_ui <- function(request) {
 
           # Column selection for clustering (always available in Unsupervised)
           uiOutput("columnSelector"),
+          checkboxInput(
+            "use_projection",
+            "Speed mode: train on subset + project + predict remaining cells",
+            value = FALSE
+          ),
 
+          conditionalPanel(
+            condition = "input.use_projection == true",
+            numericInput(
+              "max_umap_train",
+              "Max cells to train UMAP/clustering on",
+              value = 100000,
+              min = 1000,
+              step = 1000
+            ),
+            numericInput(
+              "k_transfer",
+              "k for kNN label transfer",
+              value = 15,
+              min = 1,
+              step = 1
+            ),
+            sliderInput(
+              "min_transfer_conf",
+              "Min confidence (vote fraction) to keep label (optional)",
+              min = 0, max = 1, value = 0.6, step = 0.05
+            ),
+            textInput(
+              "low_conf_label",
+              "Label for low-confidence cells",
+              value = "Uncertain"
+            )
+          ),
           # Run button (always available in Unsupervised)
-          actionButton("runClustering", "Run Clustering (unsupervised)"),
+          uiOutput("run_unsup_button"),
           tags$hr(),
 
           # Extra controls for density-by-assignment (appear after clustering is available)
@@ -88,6 +120,7 @@ app_ui <- function(request) {
 
         # Downloads
         downloadButton("downloadprocessed", "Download pre-processed .fcs"),
+        downloadButton("downloadqcout", "Download qc report table"),
         downloadButton("downloadcounts", "Download cell counts (Long format)"),
         downloadButton("downloadcountsdelta", "Download cell counts (Wide format)"),
         downloadButton("downloadseurat", "Download Seurat Object")
@@ -120,8 +153,15 @@ app_ui <- function(request) {
           ),
 
           tabPanel("Cell count table", DT::dataTableOutput("tablecounts")),
-          tabPanel("UMAP plot data", plotly::plotlyOutput("plotdata", height = "600px", width = "800px"))#,
-
+          tabPanel("Plot data", plotly::plotlyOutput("plotdata", height = "600px", width = "800px")),
+          # Viability + marker QC controls (server renders; only relevant when preprocess == Yes)
+          tabPanel(
+            "QC summary",
+            conditionalPanel(
+              condition = "input.preprocess == 'Yes'",
+              DT::dataTableOutput("table_qcfiles")
+            )
+          ),
           #tabPanel(
           # "Treatment Plot",
           #  conditionalPanel(
