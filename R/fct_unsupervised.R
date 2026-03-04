@@ -43,7 +43,7 @@
 #' marker discovery and marker-string assignment are skipped with a warning.
 #'
 #' @return A Seurat object with UMAP, clustering, and per-cell labels stored in `meta.data`.
-#' @export
+#' @noRd
 run_unsupervised_func <- function(flow_data,
                                   res = 0.5,
                                   logfold = 0.25,
