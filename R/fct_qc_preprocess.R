@@ -232,6 +232,7 @@ preprocess_flowframes <- function(frames, min_events_peacoqc = 5000) {
   )
 
   for (i in seq_len(n_files)) {
+    set.seed(1000 + i)
     ff0 <- frames[[i]]
 
     if (!inherits(ff0, "flowFrame")) {

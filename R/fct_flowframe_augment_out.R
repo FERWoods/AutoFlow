@@ -24,7 +24,7 @@ ff_add_cols_safe <- function(ff, add, extra_desc = NULL) {
     stop("add must have non-empty colnames")
   }
 
-  # prevent name collisions (against existing exprs colnames)
+  # prevent name collisions
   new_names <- colnames(addm)
   collide <- intersect(new_names, colnames(x))
   if (length(collide)) {
@@ -36,7 +36,7 @@ ff_add_cols_safe <- function(ff, add, extra_desc = NULL) {
   # append expression matrix
   x2 <- cbind(x, addm)
 
-  # --- build new parameter rows ---
+  # --- parameter stats for new cols ---
   mins <- apply(addm, 2, function(v) suppressWarnings(min(as.numeric(v), na.rm = TRUE)))
   maxs <- apply(addm, 2, function(v) suppressWarnings(max(as.numeric(v), na.rm = TRUE)))
   mins[!is.finite(mins)] <- 0
@@ -55,8 +55,8 @@ ff_add_cols_safe <- function(ff, add, extra_desc = NULL) {
     stringsAsFactors = FALSE
   )
 
-  # --- extend existing parameters object IN PLACE (preserve class) ---
-  params <- flowCore::parameters(ff)             # S4 "parameters"
+  # --- extend parameters slot ---
+  params <- flowCore::parameters(ff)  # S4 "parameters"
   pd     <- flowCore::pData(params)
 
   need_cols <- c("name", "desc", "range", "minRange", "maxRange")
@@ -64,37 +64,53 @@ ff_add_cols_safe <- function(ff, add, extra_desc = NULL) {
 
   pd2 <- rbind(pd[, need_cols, drop = FALSE], new_pd[, need_cols, drop = FALSE])
 
-  # Critical invariants:
-  # 1) name must match exprs colnames
+  # invariants
   pd2$name <- colnames(x2)
-
-  # 2) rownames must be valid and sequential ($P1..$Pn) for many read.FCS-derived frames
   rownames(pd2) <- paste0("$P", seq_len(nrow(pd2)))
 
-  # assign back into the SAME parameters object (keeps class)
   Biobase::pData(params) <- pd2
 
-  # --- update the flowFrame in place ---
   ff2 <- ff
-
-  # set expanded parameters first (so exprs replacement validates)
   methods::slot(ff2, "parameters") <- params
-
-  # now replace exprs (colnames must match parameters$name)
   flowCore::exprs(ff2) <- x2
 
-  # --- sanitize keywords for export ---
-  kw <- flowCore::keyword(ff2)
+  # --- FIXED: keep/extend $Pn* keywords instead of deleting ---
+  kw <- tryCatch(flowCore::keyword(ff2), error = function(e) NULL)
   if (is.null(kw)) kw <- list()
 
-  # remove all parameter-specific keywords ($P1N, $P1S, $P1R, $P1B, $P1E, etc.)
-  drop_idx <- grepl("^\\$P\\d+", names(kw))
-  if (any(drop_idx)) kw <- kw[!drop_idx]
-
-  # set key header fields consistently
+  # Ensure $PAR/$TOT correct
   kw[["$PAR"]] <- as.character(ncol(x2))
   kw[["$TOT"]] <- as.character(nrow(x2))
 
+  # Helper to set per-parameter keywords safely
+  set_pn <- function(k, N = NULL, S = NULL, R = NULL, B = NULL, E = NULL) {
+    kk <- as.integer(k)
+    if (!is.null(N)) kw[[sprintf("$P%dN", kk)]] <- as.character(N)
+    if (!is.null(S)) kw[[sprintf("$P%dS", kk)]] <- as.character(S)
+    if (!is.null(R)) kw[[sprintf("$P%dR", kk)]] <- as.character(R)
+    if (!is.null(B)) kw[[sprintf("$P%dB", kk)]] <- as.character(B)
+    if (!is.null(E)) kw[[sprintf("$P%dE", kk)]] <- as.character(E)
+  }
+
+  # For ALL params, ensure $PnN at least matches name
+  for (k in seq_len(ncol(x2))) {
+    set_pn(k, N = colnames(x2)[k])
+  }
+
+  # For the NEW appended cols, set sensible defaults
+  old_p <- ncol(x)
+  for (j in seq_len(ncol(addm))) {
+    k <- old_p + j
+    set_pn(
+      k,
+      S = extra_desc[j],
+      R = max(1L, as.integer(span[j])),
+      B = 32L,      # 32-bit storage is safe default
+      E = "0,0"     # linear scale
+    )
+  }
+
+  # Write back keywords
   flowCore::keyword(ff2) <- kw
 
   ff2

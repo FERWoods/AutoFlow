@@ -1018,78 +1018,16 @@ app_server <- function(input, output, session) {
       condition = !is.null(proc_ff()) && length(proc_ff()) > 0
     )
   })
-  # Export PROCESSED FCS annotated with already-computed flags (light debug)
   output$downloadprocessed <- downloadHandler(
-    filename = function() paste0(Sys.Date(), "_AutoFlow_processed_annotated_fcs.zip"),
+    filename = function() paste0(Sys.Date(), "_AutoFlow_processed_annotated_csv.zip"),
     content = function(zipfile) {
 
       logd <- function(...) {
         message(format(Sys.time(), "%H:%M:%S"), " | ", paste0(..., collapse = ""))
       }
 
-      # Compact per-file snapshot only when something goes wrong
-      snap_ff <- function(i, ff, add = NULL, fl = NULL, tag = "") {
-        logd("---- SNAPSHOT i=", i, " ", tag, " ----")
-
-        expr <- tryCatch(flowCore::exprs(ff), error = function(e) NULL)
-        if (!is.null(expr)) {
-          logd("exprs: nrow=", nrow(expr), " ncol=", ncol(expr))
-          cn <- colnames(expr) %||% character()
-          logd("colnames head: ", paste(utils::head(cn, 8), collapse = ", "))
-        } else {
-          logd("exprs: <FAILED>")
-        }
-
-        pd <- tryCatch(flowCore::pData(flowCore::parameters(ff)), error = function(e) NULL)
-        if (!is.null(pd)) {
-          logd("pData: nrow=", nrow(pd), " ncol=", ncol(pd))
-          if ("name" %in% names(pd)) {
-            logd("pd$name head: ", paste(utils::head(pd$name, 8), collapse = ", "))
-          }
-          logd("rownames(pd) head: ", paste(utils::head(rownames(pd), 8), collapse = ", "))
-        } else {
-          logd("pData: <FAILED>")
-        }
-
-        kw <- tryCatch(flowCore::keyword(ff), error = function(e) NULL)
-        if (!is.null(kw)) {
-          has_pn <- any(grepl("^\\$P\\d+", names(kw) %||% character()))
-          logd("keyword: $PAR=", kw[["$PAR"]], " $TOT=", kw[["$TOT"]], " has $Pn*=", has_pn)
-        } else {
-          logd("keyword: <FAILED>")
-        }
-
-        if (!is.null(fl)) {
-          logd("flags: class=", paste(class(fl), collapse = "/"),
-               if (is.data.frame(fl)) paste0(" nrow=", nrow(fl), " ncol=", ncol(fl)) else "")
-          if (is.data.frame(fl)) logd("flags cols: ", paste(colnames(fl), collapse = ", "))
-        }
-
-        if (!is.null(add)) {
-          logd("add: nrow=", nrow(add), " ncol=", ncol(add))
-          logd("add cols: ", paste(colnames(add), collapse = ", "))
-        }
-
-        logd("---- END SNAPSHOT ----")
-      }
-
-      # If rlang exists, last_trace() is nicer than base traceback
-      log_trace <- function() {
-        if (requireNamespace("rlang", quietly = TRUE)) {
-          tr <- tryCatch(rlang::last_trace(), error = function(e) NULL)
-          if (!is.null(tr)) {
-            logd("rlang::last_trace():")
-            logd(paste(utils::capture.output(print(tr)), collapse = "\n"))
-            return(invisible())
-          }
-        }
-        logd("base traceback():")
-        logd(paste(utils::capture.output(traceback()), collapse = "\n"))
-      }
-
-      # Preconditions
       validate(need(identical(input$preprocess, "Yes"),
-                    "Turn preprocessing on to export processed annotated FCS."))
+                    "Turn preprocessing on to export processed annotated data."))
 
       P <- proc_ff()
       validate(need(!is.null(P) && length(P) > 0, "No processed flowFrames available to export."))
@@ -1105,17 +1043,15 @@ app_server <- function(input, output, session) {
       vl_name <- input$viability_marker_name %||% default_viab_name()
       thr     <- input$viability_threshold %||% auto_viab_thr_val() %||% 0
 
-      td <- tempfile("autoflow_fcs_")
+      td <- tempfile("autoflow_csv_")
       dir.create(td, showWarnings = FALSE, recursive = TRUE)
 
-      logd("downloadprocessed: n_files=", length(P),
+      logd("downloadprocessed(CSV): n_files=", length(P),
            "  vl_name=", vl_name, " thr=", thr,
            "  td=", td)
 
-      out_files <- character(0)
       need_cols <- c("AutoFlow_debris", "AutoFlow_doublet", "AutoFlow_badqc")
-
-      # throttle progress logging
+      out_files <- character(0)
       every_k <- 5L
 
       for (i in seq_along(P)) {
@@ -1127,25 +1063,21 @@ app_server <- function(input, output, session) {
           next
         }
 
-        expr <- tryCatch(flowCore::exprs(ff), error = function(e) {
+        x <- tryCatch(flowCore::exprs(ff), error = function(e) {
           logd("ERROR i=", i, ": exprs(ff) failed: ", conditionMessage(e))
-          snap_ff(i, ff, fl = fl, tag = "[exprs failed]")
-          log_trace()
           NULL
         })
-        if (is.null(expr)) next
+        if (is.null(x)) next
 
-        n <- nrow(expr)
+        n <- nrow(x)
         if (!is.finite(n) || n <= 0) {
           logd("SKIP i=", i, ": n<=0")
           next
         }
 
-        # build required vectors from precomputed flags
         if (!(is.data.frame(fl) && nrow(fl) == n && all(need_cols %in% names(fl)))) {
           logd("FATAL i=", i, ": flags misaligned (flags_rows=",
                if (is.data.frame(fl)) nrow(fl) else NA, " expected=", n, ")")
-          snap_ff(i, ff, fl = fl, tag = "[flags misaligned]")
           stop(sprintf("Flags missing/misaligned for file %d.", i))
         }
 
@@ -1157,62 +1089,52 @@ app_server <- function(input, output, session) {
         doublet[!is.finite(doublet) | !(doublet %in% c(0L,1L))] <- 0L
         badqc[!is.finite(badqc)     | !(badqc %in% c(0L,1L))]   <- 0L
 
-        # viability on processed data
         viable <- rep.int(1L, n)
-        if (!is.null(vl_name) && (vl_name %in% flowCore::colnames(ff))) {
-          v <- suppressWarnings(as.numeric(expr[, vl_name]))
+        if (!is.null(vl_name) && (vl_name %in% colnames(x))) {
+          v <- suppressWarnings(as.numeric(x[, vl_name]))
           ok <- is.finite(v)
           viable[ok] <- as.integer(v[ok] < thr)
         }
 
-        add <- data.frame(
-          AutoFlow_debris     = debris,
-          AutoFlow_doublet    = doublet,
-          AutoFlow_badqc      = badqc,
-          AutoFlow_viable     = as.integer(viable),
-          AutoFlow_singlecell = as.integer(doublet == 0L),
-          check.names = FALSE
-        )
+        df <- as.data.frame(x, check.names = FALSE)
+        df$AutoFlow_debris     <- debris
+        df$AutoFlow_doublet    <- doublet
+        df$AutoFlow_badqc      <- badqc
+        df$AutoFlow_viable     <- as.integer(viable)
+        df$AutoFlow_singlecell <- as.integer(doublet == 0L)
+        df$AutoFlow_source_file <- basename(paths[i] %||% sprintf("file_%02d.fcs", i))
+        df$AutoFlow_file_index  <- i
 
-        if (i %% every_k == 1L || i == length(P)) {
-          logd("i=", i, "/", length(P), "  n=", n, "  p=", ncol(expr))
-        }
-
-        ff2 <- tryCatch(
-          ff_add_cols_safe(ff, add, extra_desc = paste0(colnames(add), " (AutoFlow)")),
-          error = function(e) {
-            logd("ERROR i=", i, ": ff_add_cols_safe failed: ", conditionMessage(e))
-            snap_ff(i, ff, add = add, fl = fl, tag = "[ff_add_cols_safe failed]")
-            log_trace()
-            NULL
-          }
-        )
-        if (is.null(ff2)) next
-
-        in_base <- basename(paths[i] %||% sprintf("file_%02d.fcs", i))
-        in_base <- sub("\\.fcs$", "", in_base, ignore.case = TRUE)
-        out_name <- sprintf("AutoFlow_processed__%02d__%s.fcs", i, in_base)
+        in_base  <- sub("\\.fcs$", "", df$AutoFlow_source_file[1], ignore.case = TRUE)
+        out_name <- sprintf("AutoFlow_processed__%02d__%s.csv.gz", i, in_base)
         out_path <- file.path(td, out_name)
 
+        con <- NULL
         ok_write <- tryCatch({
-          flowCore::write.FCS(ff2, filename = out_path)
+          con <- gzfile(out_path, open = "wt")
+          utils::write.csv(df, con, row.names = FALSE)
           TRUE
         }, error = function(e) {
-          logd("ERROR i=", i, ": write.FCS failed: ", conditionMessage(e))
-          # snapshot after building ff2 is useful too:
-          snap_ff(i, ff2, add = add, fl = fl, tag = "[write.FCS failed; snapshot ff2]")
-          log_trace()
+          logd("ERROR i=", i, ": write.csv failed: ", conditionMessage(e))
           FALSE
+        }, finally = {
+          if (!is.null(con)) {
+            try(close(con), silent = TRUE)
+          }
         })
 
         if (ok_write && file.exists(out_path)) {
           out_files <- c(out_files, out_path)
         }
+
+        if (i %% every_k == 1L || i == length(P)) {
+          logd("i=", i, "/", length(P), "  wrote=", length(out_files))
+        }
       }
 
       logd("written=", length(out_files), "/", length(P))
       validate(need(length(out_files) > 0,
-                    "No processed annotated FCS files were generated (see console logs)."))
+                    "No processed annotated CSV files were generated (see console logs)."))
 
       if (requireNamespace("zip", quietly = TRUE)) {
         zip::zipr(zipfile, files = out_files, root = td)

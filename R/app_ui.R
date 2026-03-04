@@ -119,7 +119,7 @@ app_ui <- function(request) {
         #tags$hr(),
 
         # Downloads
-        downloadButton("downloadprocessed", "Download pre-processed .fcs"),
+        downloadButton("downloadprocessed", "Download pre-processed data"),
         downloadButton("downloadqcout", "Download qc report table"),
         downloadButton("downloadcounts", "Download cell counts (Long format)"),
         downloadButton("downloadcountsdelta", "Download cell counts (Wide format)"),
