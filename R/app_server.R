@@ -756,7 +756,12 @@ app_server <- function(input, output, session) {
     # Handle different prediction output formats for ranger vs randomForest, and factor vs numeric predictions.
     if (!is.null(b$model)) {
       if (inherits(b$model, "ranger")) {
-        pr <- predict(b$model, data = as.data.frame(Xs))
+        # Ensure predict.ranger is registered
+        if (!requireNamespace("ranger", quietly = TRUE)) {
+          showNotification("Package 'ranger' is required to use this model.", type = "error")
+          return(invisible(NULL))
+        }
+        pr <- stats::predict(b$model, data = as.data.frame(Xs))
         if (!is.null(pr$predictions) && is.matrix(pr$predictions)) {
           probs <- pr$predictions
           cls <- colnames(probs)[max.col(probs, ties.method = "first")]

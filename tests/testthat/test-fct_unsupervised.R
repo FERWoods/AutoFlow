@@ -174,3 +174,46 @@ test_that("assign_by_knn respects k bounds and errors on bad inputs", {
   expect_error(assign_by_knn(pca_train, labels_train[-1], pca_query, k = 3))
   expect_error(assign_by_knn(pca_train, labels_train, pca_query, k = 0))
 })
+
+test_that("ranger models predict correctly without attaching ranger", {
+
+  skip_if_not_installed("ranger")
+
+  # simulate small dataset
+  set.seed(1)
+  X <- data.frame(
+    x1 = rnorm(100),
+    x2 = rnorm(100)
+  )
+  y <- factor(sample(c("A","B"), 100, TRUE))
+
+  # train ranger model
+  model <- ranger::ranger(
+    y ~ .,
+    data = cbind(X, y),
+    probability = TRUE
+  )
+
+  # simulate bundle structure used by AutoFlow
+  bundle <- list(model = model)
+
+  # ensure ranger is NOT attached
+  if ("package:ranger" %in% search()) {
+    detach("package:ranger", unload = TRUE, character.only = TRUE)
+  }
+
+  # ensure namespace is available
+  expect_true(requireNamespace("ranger", quietly = TRUE))
+
+  # prediction data
+  newdata <- X[1:10, ]
+
+  # run prediction
+  pr <- stats::predict(bundle$model, data = newdata)
+
+  # tests
+  expect_true(!is.null(pr))
+  expect_true("predictions" %in% names(pr))
+  expect_equal(nrow(pr$predictions), 10)
+
+})
